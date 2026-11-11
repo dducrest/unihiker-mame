@@ -2,14 +2,15 @@
 # Sets up the Game Boy emulator on a UNIHIKER M10. Runs on the board, as root.
 # deploy.sh copies the repo to /tmp/unihiker-gb on the board and runs this script.
 #
-#   install.sh [--src <dir>] [--rom-file <name>] [--disable-launcher <unit>]
-#              [--bt-ertm-fix] [--no-start]
+#   install.sh [--src <dir>] [--rom-file <name>] [--bt-ertm-fix] [--no-start]
 #
 #   --src <dir>                Repo files to install from (default: the repo this script is in)
 #   --rom-file <name>          Set the boot ROM: a filename that is already in /root/roms/
-#   --disable-launcher <unit>  Disable the built-in UNIHIKER menu service and remember its name
 #   --bt-ertm-fix              Install the Bluetooth ERTM workaround
 #   --no-start                 Don't start/restart the emulator service
+#
+# The built-in UNIHIKER menu (PyboardUI.service) is not disabled here: the launcher stops it
+# at each boot, so nothing on the board needs restoring later.
 #
 # Safe to re-run: each step checks first and only changes what's needed.
 # Without systemd (the Docker test), the systemd and udev steps are reported as skipped.
@@ -17,7 +18,6 @@ set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 ROM_FILE_ARG=""
-LAUNCHER_ARG=""
 ERTM_FIX=no
 NO_START=no
 
@@ -46,7 +46,6 @@ while [ $# -gt 0 ]; do
   case $1 in
     --src) [ $# -ge 2 ] || usage 2; SRC=$2; shift ;;
     --rom-file) [ $# -ge 2 ] || usage 2; ROM_FILE_ARG=$2; shift ;;
-    --disable-launcher) [ $# -ge 2 ] || usage 2; LAUNCHER_ARG=$2; shift ;;
     --bt-ertm-fix) ERTM_FIX=yes ;;
     --no-start) NO_START=yes ;;
     -h | --help) usage 0 ;;
@@ -226,17 +225,6 @@ elif ! cmp -s "$SRC/config/mgba-config.ini" "$MGBA_CONF"; then
   warn "$MGBA_CONF differs from the repo version; the repo version is saved as config.ini.repo"
 fi
 
-if [ -n "$LAUNCHER_ARG" ]; then
-  case $LAUNCHER_ARG in
-    *[!A-Za-z0-9@._:-]* | -*) die "not a valid service name: $LAUNCHER_ARG" ;;
-  esac
-  if [ "$(conf_value "$ETC/board.conf" LAUNCHER_UNIT)" != "$LAUNCHER_ARG" ]; then
-    [ -f "$ETC/board.conf" ] && cp -p "$ETC/board.conf" "$ETC/board.conf.bak"
-    set_conf_var "$ETC/board.conf" LAUNCHER_UNIT "$LAUNCHER_ARG"
-    changed "built-in menu service recorded as $LAUNCHER_ARG"
-  fi
-fi
-
 # 7. Version ----------------------------------------------------------------------------
 step "Writing the version stamp"
 version_tmp=$(mktemp)
@@ -279,21 +267,7 @@ if [ "$ERTM_FIX" = yes ]; then
   fi
 fi
 
-# 9. Built-in launcher --------------------------------------------------------------------
-if [ -n "$LAUNCHER_ARG" ]; then
-  step "Disabling the built-in menu ($LAUNCHER_ARG)"
-  if [ "$HAVE_SYSTEMD" = yes ]; then
-    systemctl cat "$LAUNCHER_ARG" >/dev/null 2>&1 || die "no service called $LAUNCHER_ARG on this board"
-    if systemctl -q is-enabled "$LAUNCHER_ARG" || systemctl -q is-active "$LAUNCHER_ARG"; then
-      systemctl disable --now "$LAUNCHER_ARG"
-      changed "disabled $LAUNCHER_ARG"
-    fi
-  else
-    skip "disable $LAUNCHER_ARG (no systemd)"
-  fi
-fi
-
-# 10. Service ------------------------------------------------------------------------------
+# 9. Service ------------------------------------------------------------------------------
 step "Emulator service"
 if [ "$HAVE_SYSTEMD" = yes ]; then
   [ "$UNIT_CHANGED" = yes ] && systemctl daemon-reload
@@ -311,7 +285,7 @@ else
   skip "enable and start gameboy.service (no systemd)"
 fi
 
-# 11. Verify and summarize -------------------------------------------------------------------
+# 10. Verify and summarize -------------------------------------------------------------------
 step "Checking the result"
 rom=$(conf_value "$ETC/game.conf" ROM_FILE)
 if [ -n "$rom" ] && [ -f "$ROMS/$rom" ]; then
