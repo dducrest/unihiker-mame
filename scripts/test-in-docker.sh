@@ -52,6 +52,7 @@ docker run --rm --platform "$PLATFORM" -v "$REPO:/src:ro" "$IMAGE" bash -euo pip
   check "mgba is installed" test -x /usr/games/mgba
   check "jstest is installed" test -x /usr/bin/jstest
   check "bluetoothctl is installed" test -x /usr/bin/bluetoothctl
+  check "xdotool is installed" test -x /usr/bin/xdotool
   check "python3 has tkinter" python3 -c "import tkinter"
   check "boot ROM is set (name with spaces and brackets)" \
     bash -c ". /etc/unihiker-gb/game.conf && [ \"\$ROM_FILE\" = \"$rom\" ]"
@@ -59,10 +60,15 @@ docker run --rm --platform "$PLATFORM" -v "$REPO:/src:ro" "$IMAGE" bash -euo pip
   check "old save no longer in /root/roms" test ! -e "/root/roms/Test Game (USA).sav"
   check "version stamp written" grep -q "commit=docker-test" /etc/unihiker-gb/version
   check "package arch in version stamp" grep -q "packages_arch=" /etc/unihiker-gb/version
-  for f in start-gb.sh status-screen.py check-skip-button.py controller-event.sh set-rom.sh \
-           pair-bluetooth.sh lib/rom-rules.sh splash.png gamecontrollerdb.txt; do
+  for f in start-gb.sh status-screen.py check-skip-button.py hotkeys.py controller-event.sh set-rom.sh \
+           pair-bluetooth.sh lib/rom-rules.sh splash.png; do
     check "/opt/unihiker-gb/$f installed" test -f "/opt/unihiker-gb/$f"
   done
+  check "no controller database installed" test ! -e /opt/unihiker-gb/gamecontrollerdb.txt
+  check "controller mapping in mGBA config" grep -q '^keyA=' /root/.config/mgba/config.ini
+  timeout 2 /opt/unihiker-gb/hotkeys.py --dry-run >/tmp/hotkeys.log 2>&1 || true
+  check "hotkeys.py reads L/R/Select/Start from the mGBA config" \
+    grep -q "L=4 R=5 Select=8 Start=9" /tmp/hotkeys.log
   check "start-gb.sh is executable" test -x /opt/unihiker-gb/start-gb.sh
   check "systemd unit installed" test -f /etc/systemd/system/gameboy.service
   check "udev rule installed" test -f /etc/udev/rules.d/99-unihiker-gb-controller.rules

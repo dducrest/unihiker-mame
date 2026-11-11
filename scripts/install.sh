@@ -22,7 +22,7 @@ ERTM_FIX=no
 NO_START=no
 
 # Keep in sync with PACKAGES in scripts/fetch-packages.sh.
-PACKAGES="mgba-sdl bluez joystick python3-tk"
+PACKAGES="mgba-sdl bluez joystick python3-tk xdotool"
 
 APP=/opt/unihiker-gb
 ETC=/etc/unihiker-gb
@@ -181,12 +181,17 @@ step "Installing program files"
 install_file "$SRC/launcher/start-gb.sh" "$APP/start-gb.sh" 0755 || true
 install_file "$SRC/launcher/status-screen.py" "$APP/status-screen.py" 0755 || true
 install_file "$SRC/launcher/check-skip-button.py" "$APP/check-skip-button.py" 0755 || true
+install_file "$SRC/launcher/hotkeys.py" "$APP/hotkeys.py" 0755 || true
 install_file "$SRC/launcher/controller-event.sh" "$APP/controller-event.sh" 0755 || true
 install_file "$SRC/scripts/set-rom.sh" "$APP/set-rom.sh" 0755 || true
 install_file "$SRC/scripts/pair-bluetooth.sh" "$APP/pair-bluetooth.sh" 0755 || true
 install_file "$SRC/scripts/lib/rom-rules.sh" "$APP/lib/rom-rules.sh" 0644 || true
 install_file "$SRC/assets/splash.png" "$APP/splash.png" 0644 || true
-install_file "$SRC/config/gamecontrollerdb.txt" "$APP/gamecontrollerdb.txt" 0644 || true
+# Earlier versions installed SDL's controller database, which mGBA 0.7.0 doesn't use.
+if [ -e "$APP/gamecontrollerdb.txt" ]; then
+  rm -f "$APP/gamecontrollerdb.txt"
+  changed "removed the unused $APP/gamecontrollerdb.txt"
+fi
 
 UNIT_CHANGED=no
 install_file "$SRC/systemd/gameboy.service" "$UNIT_FILE" 0644 && UNIT_CHANGED=yes

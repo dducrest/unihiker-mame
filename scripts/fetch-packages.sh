@@ -13,7 +13,7 @@ OUT="$REPO/packages"
 PLATFORM=linux/arm64
 IMAGE=debian:buster
 # Keep in sync with PACKAGES in scripts/install.sh.
-PACKAGES="mgba-sdl bluez joystick python3-tk"
+PACKAGES="mgba-sdl bluez joystick python3-tk xdotool"
 
 usage() {
   sed -n '2,8s/^# \{0,1\}//p' "$0"
