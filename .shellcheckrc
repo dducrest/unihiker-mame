@@ -1,0 +1,2 @@
+# Resolve "# shellcheck source=" paths relative to each script.
+source-path=SCRIPTDIR

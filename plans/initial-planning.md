@@ -9,6 +9,19 @@ Nothing here has been tested on an M10 yet. Check the items marked ⚠️ on the
 - At first the board boots straight into **one specific ROM**.
 - Choosing the ROM is **configuration, not code.** Changing the game later, or adding a game picker, shouldn't mean rewriting the launch script or the service.
 
+## Implementation status (2026-11-11)
+
+| Part | Status |
+|---|---|
+| `deploy.sh`, `fetch-logs.sh`, `scripts/lib/common.sh` | Built. Tested on macOS against a buster container running sshd: first login with the default password, re-deploy, `--pull-saves`, clock, changed host key, `--forget-host`, unreachable board, bad ROM name. `fetch-logs.sh` reached the container but needs the board's systemd journal to show anything. |
+| `scripts/check-roms.sh`, `scripts/lib/rom-rules.sh` | Built. Tested by `tests/test-check-roms.sh` on macOS's bash 3.2. |
+| `scripts/fetch-packages.sh` | Built. Downloads 244 arm64 packages (82 MB). |
+| `scripts/install.sh`, `scripts/set-rom.sh` | Built. `scripts/test-in-docker.sh` runs `install.sh` twice in an arm64 buster container: all checks pass and the second run changes nothing. Not yet run on a real board, so the systemd, udev and Bluetooth steps are untested. |
+| CI (`.github/workflows/ci.yml`) | Built. shellcheck, Python syntax check, ROM filename tests, and the Docker install test under arm64 emulation. Not yet run on GitHub. |
+| Config files, `gameboy.service`, udev rule, `assets/splash.png` | Built (splash is a placeholder). |
+| `launcher/*`, `scripts/pair-bluetooth.sh` | **Placeholders.** They install cleanly but do nothing yet. They're written after the board checks: package architecture, `pinpong` and its pins, the built-in menu's service name, `savegamePath`, the SDL 2.0.9 controller database, and pause/resume. |
+| `docs/recovery.md` | Not written yet. |
+
 ## What you're working with
 
 | Spec | Why it matters |
@@ -36,6 +49,9 @@ mGBA plays `.gb`, `.gbc` and `.gba`, so changing the ROM later won't mean changi
 /opt/unihiker-gb/status-screen.py       <- splash image, then the "connect a controller" prompt
 /opt/unihiker-gb/check-skip-button.py   <- exits 0 if a board button is held at boot
 /opt/unihiker-gb/controller-event.sh    <- pauses/resumes mGBA when the controller disconnects/reconnects
+/opt/unihiker-gb/set-rom.sh             <- changes the boot ROM
+/opt/unihiker-gb/pair-bluetooth.sh      <- pairs a Bluetooth controller
+/opt/unihiker-gb/lib/rom-rules.sh       <- ROM filename rules used by set-rom.sh
 /opt/unihiker-gb/splash.png
 /opt/unihiker-gb/gamecontrollerdb.txt   <- SDL controller mappings for common gamepads
 /opt/unihiker-gb/packages/              <- offline .deb packages and their index
@@ -83,6 +99,7 @@ launcher/check-skip-button.py
 launcher/controller-event.sh
 systemd/gameboy.service
 scripts/lib/common.sh              # Mac: shared settings for deploy.sh and fetch-logs.sh (host, SSH key, known-hosts file)
+scripts/lib/rom-rules.sh           # Mac and board: ROM filename rules shared by check-roms.sh, install.sh and set-rom.sh
 scripts/check-roms.sh              # Mac: flags ROM filenames that will cause problems (run by deploy.sh, or on its own)
 scripts/fetch-packages.sh          # Mac (needs Docker): downloads the .deb packages into packages/
 scripts/test-in-docker.sh          # Mac or CI: runs install.sh in an arm64 buster container
@@ -90,7 +107,9 @@ scripts/install.sh                 # board: installs packages and files, enables
 scripts/pair-bluetooth.sh          # board: interactive helper for pairing a controller
 scripts/set-rom.sh                 # board: set-rom.sh <filename> updates game.conf, restarts the service
 docs/recovery.md                   # how to restore the board's factory image (item 6)
+tests/test-check-roms.sh           # Mac or CI: tests check-roms.sh with good and bad filenames
 .github/workflows/ci.yml           # shellcheck + test-in-docker on every push
+.shellcheckrc                      # lets shellcheck find the shared libraries
 packages/                          # offline .deb packages; contents are gitignored
 packages/.gitignore
 roms/                              # local ROM library to deploy; contents are gitignored
@@ -124,15 +143,16 @@ scripts/fetch-packages.sh            # fills packages/ with arm64 buster .debs a
 ssh root@10.1.2.3                    # default password: dfrobot (change it)
 dpkg --print-architecture            # ⚠️ must match the packages (expected: arm64)
 ```
-Copy the packages and ROMs over, then install from the local folder (no internet needed):
+Create the folders, copy the packages and ROMs over, then install from the local folder (no internet needed):
 ```bash
+ssh root@10.1.2.3 'mkdir -p /root/roms /root/saves /etc/unihiker-gb /opt/unihiker-gb'
 scp -r packages root@10.1.2.3:/opt/unihiker-gb/
 scp roms/game.gb root@10.1.2.3:/root/roms/      # homebrew or dumps of cartridges you own
 # on the board:
 echo 'deb [trusted=yes] file:/opt/unihiker-gb/packages ./' > /etc/apt/sources.list.d/unihiker-gb.list
 apt-get update -o Dir::Etc::sourcelist=sources.list.d/unihiker-gb.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
-apt-get install -y --no-download mgba-sdl bluez joystick python3-tk
-mkdir -p /root/roms /root/saves /etc/unihiker-gb /opt/unihiker-gb
+apt-get install -y --no-install-recommends -o Dir::Etc::sourcelist=sources.list.d/unihiker-gb.list -o Dir::Etc::sourceparts=- \
+  mgba-sdl bluez joystick python3-tk
 ```
 Pointing apt at the local folder only is the same idea as `dpkg -i`, but apt works out the install order and skips packages the board already has.
 
@@ -164,12 +184,14 @@ systemctl enable bluetooth
 ```bash
 DISPLAY=:0 SDL_AUDIODRIVER=dummy \
   SDL_GAMECONTROLLERCONFIG="$(grep -i 'platform:Linux' /opt/unihiker-gb/gamecontrollerdb.txt)" \
-  mgba -f -C savegamePath=/root/saves /root/roms/game.gb
+  /usr/games/mgba -f -C savegamePath=/root/saves /root/roms/game.gb
 ```
+Debian installs mGBA (version 0.7.0 in buster) to `/usr/games/mgba`, which isn't on root's `PATH`, so always use the full path.
 Check that it runs at full speed, the screen fills properly and the controller responds with the right buttons. `SDL_AUDIODRIVER=dummy` turns sound off.
 
 - ⚠️ **Does mGBA use the SDL controller database?** buster's mGBA may read raw joystick buttons and ignore `SDL_GAMECONTROLLERCONFIG`. If buttons are wrong with the database loaded, fix the mapping in `/root/.config/mgba/config.ini` instead, and commit that mapping to `config/mgba-config.ini` (one section per controller model).
-- ⚠️ **Does buster's mGBA accept `-C savegamePath=...`?** Save in-game, then check that the `.sav` file appears in `/root/saves/` and not next to the ROM. If the option isn't supported, set `savegamePath` in `config/mgba-config.ini` instead.
+- ⚠️ **SDL version:** buster has SDL 2.0.9, but `gamecontrollerdb.txt` is written for SDL 2.0.16. Check that SDL 2.0.9 still loads the entry for your controller.
+- ⚠️ **Does mGBA honor `savegamePath`?** mGBA 0.7.0 accepts `-C OPTION=VALUE` (confirmed in a container). Still to check on the board: save in-game, then confirm the `.sav` file appears in `/root/saves/` and not next to the ROM. If it doesn't, set `savegamePath` in `config/mgba-config.ini` instead.
 - ⚠️ Bluetooth controllers often connect *after* the emulator has started. The boot flow waits for a controller before starting mGBA, but check that mGBA still picks up a controller that reconnects mid-game (see step 9).
 
 ### 4. ROM selection: `/etc/unihiker-gb/game.conf`
@@ -220,7 +242,7 @@ kill "$SCREEN" 2>/dev/null || true
 export SDL_AUDIODRIVER=dummy     # sound off (item 15)
 export SDL_GAMECONTROLLERCONFIG="$(grep -i 'platform:Linux' "$APP/gamecontrollerdb.txt")"   # item 14
 echo "starting mGBA: $ROM_FILE"  # this timestamp in the journal is used to measure boot time (item 17)
-exec mgba -f -C savegamePath="$SAVES_DIR" "$ROM_PATH"
+exec /usr/games/mgba -f -C savegamePath="$SAVES_DIR" "$ROM_PATH"
 ```
 `chmod +x /opt/unihiker-gb/start-gb.sh`
 
@@ -305,18 +327,12 @@ The goal: take a fresh UNIHIKER M10 to the configuration above with one command,
 Keeping all the board-side logic in `install.sh` means it can be tested directly over SSH. `deploy.sh` only checks, moves files and runs it. `deploy.sh` and `fetch-logs.sh` share their host and SSH settings through `scripts/lib/common.sh`.
 
 ### `fetch-packages.sh`
-Runs an arm64 Debian buster container and downloads the packages with their dependencies:
-```bash
-docker run --rm --platform linux/arm64 -v "$PWD/packages:/out" debian:buster bash -c '
-  echo "deb http://archive.debian.org/debian buster main" > /etc/apt/sources.list
-  apt-get -o Acquire::Check-Valid-Until=false update
-  apt-get install -y --download-only mgba-sdl bluez joystick python3-tk
-  cp /var/cache/apt/archives/*.deb /out/
-  apt-get install -y dpkg-dev && cd /out && dpkg-scanpackages . > Packages'
-```
-- The container starts from a minimal image, so it also downloads packages the board already has. That's harmless: apt skips them on the board.
+Runs an arm64 Debian buster container and downloads the packages with their **full** dependency tree (about 240 packages, 80 MB):
+- Uses archive.debian.org for buster, buster-updates and the buster security updates. The base image's core libraries are at security-update versions, so those sources are needed.
+- Downloads the whole dependency tree (`apt-cache depends --recurse`, then `apt-get download`), not just what the container lacks. A plain `--download-only` skips libraries the container already has, such as `libc6`, and the install would then fail on a board with older versions of them.
+- Writes a flat apt repository index (`Packages` and `Release`, with `apt-ftparchive`) and `packages/manifest.txt` (architecture, package list, date, git commit).
 - ⚠️ If the board reports `armhf` rather than `arm64`, use `--platform linux/arm/v7`.
-- It also writes the git commit and date into `packages/manifest.txt`, so it's clear which package set is deployed.
+- Apt skips packages the board already has at the same or a newer version, and `install.sh` installs with `--no-install-recommends` to match what was downloaded.
 
 ### SSH access (items 3 and 4)
 `scripts/lib/common.sh` gives every Mac script the same SSH settings:
@@ -330,6 +346,7 @@ SSH_OPTS=(-i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o
 - **Re-flashed or different board:** its key changes, and SSH refuses to connect, as it should. `deploy.sh` recognizes this error and tells you to re-run with `--forget-host` if you've just re-flashed or swapped the board. `--forget-host` runs `ssh-keygen -R <host> -f "$KNOWN_HOSTS"`.
 - **First login:** if the key is missing, `deploy.sh` creates it (`ssh-keygen -t ed25519 -N "" -f "$KEY"`). If the board doesn't accept the key yet (`ssh -o BatchMode=yes ... true` fails), it runs `ssh-copy-id` with that key. You type the default password (`dfrobot`) once; after that, no more password prompts.
 - **Root password:** `--set-password` runs `ssh -t root@<host> passwd` so you can change it from the default.
+- **Port:** the board uses port 22. The `UNIHIKER_SSH_PORT` environment variable overrides it, which is only needed for testing `deploy.sh` against a container.
 
 ### ROM filename check (item 10)
 `scripts/check-roms.sh <file or folder>...` checks every ROM about to be deployed:
@@ -364,17 +381,17 @@ Changing the game later:
 ```
 Backing up saves, and reading logs:
 ```bash
-./deploy.sh --pull-saves                       # saves/2026-11-11-1530/...
+./deploy.sh --pull-saves                       # saves/2026-11-11-153000/...
 ./fetch-logs.sh                                # last 200 lines; --follow to watch live, --lines <n>, --boot for this boot only
 ```
 
 ### What `deploy.sh` does
-1. **Local checks:** `packages/` contains a package index (`Packages`); if not, it tells you to run `scripts/fetch-packages.sh` and stops. Runs `scripts/check-roms.sh` on the `--rom` and `--roms-dir` files and stops if any filename would cause problems.
+1. **ROM check:** runs `scripts/check-roms.sh` on the `--rom` and `--roms-dir` files and stops if any filename would cause problems.
 2. **SSH access:** with `--forget-host`, forgets the old key first. Creates the SSH key if needed, checks that the board is reachable, and installs the key with `ssh-copy-id` if the board doesn't accept it yet (see [SSH access](#ssh-access-items-3-and-4)). If the board can't be reached, it prints how to connect (USB cable, address) and stops.
 3. **Root password:** with `--set-password`, runs `passwd` on the board interactively.
 4. **Clock (item 2):** sets the board's clock from the Mac: `ssh root@<host> "date -u -s @$(date -u +%s)"`.
-5. **Saves (item 8):** with `--pull-saves`, copies `/root/saves/` from the board into a new `saves/<YYYY-MM-DD-HHMM>/` folder, using `tar` over SSH, then stops. Each backup goes to a new folder, so earlier backups are never overwritten.
-6. **Staging:** writes a `VERSION` file (output of `git describe --always --dirty` and the date in UTC), then streams the repo files to a staging folder on the board, using `tar` over SSH so the board doesn't need `rsync`:
+5. **Saves (item 8):** with `--pull-saves`, copies `/root/saves/` from the board into a new `saves/<YYYY-MM-DD-HHMMSS>/` folder, using `tar` over SSH, then stops. Each backup goes to a new folder, so earlier backups are never overwritten.
+6. **Staging:** checks that `packages/` contains a package index (`Packages`); if not, it tells you to run `scripts/fetch-packages.sh` and stops. (This check comes after the saves step, so `--pull-saves` works without packages.) Then writes a `VERSION` file (output of `git describe --always --dirty` and the date in UTC), then streams the repo files to a staging folder on the board, using `tar` over SSH so the board doesn't need `rsync`:
    `tar -czf - VERSION assets config launcher systemd scripts packages | ssh root@<host> 'rm -rf /tmp/unihiker-gb && mkdir -p /tmp/unihiker-gb && tar -xzf - -C /tmp/unihiker-gb'`
 7. **ROMs:** copies ROMs with `scp` into `/root/roms/`, if `--rom` or `--roms-dir` was given. It never deletes anything on the board.
 8. **Install:** runs `ssh root@<host> 'bash /tmp/unihiker-gb/scripts/install.sh <flags>'`, passing the matching flags through (including `--rom-file "<filename>"` when `--rom` was given).
@@ -397,13 +414,13 @@ Each step checks first and only changes what's needed, so re-running it is safe.
    - `mgba-config.ini`: install only if no mGBA config exists. If one exists and differs, save the repo version alongside it as `config.ini.repo` and print a notice.
    - `board.conf`: set `LAUNCHER_UNIT` when `--disable-launcher` is given.
 7. **Version (item 19):** write `/etc/unihiker-gb/version` from the staged `VERSION` file plus the package manifest.
-8. **Bluetooth:** `systemctl enable bluetooth`. With `--bt-ertm-fix`, install `config/bluetooth.conf` to `/etc/modprobe.d/` and set the option for the current boot too.
+8. **Bluetooth:** `systemctl enable bluetooth`. With `--bt-ertm-fix`, install `config/bluetooth.conf` as `/etc/modprobe.d/unihiker-gb-bluetooth.conf` and set the option for the current boot too.
 9. **Built-in launcher** (with `--disable-launcher <unit>`): `systemctl disable --now <unit>`. Never guess the unit name; it has to be passed in, so the script can't disable the wrong thing.
 10. **Service:** `systemctl daemon-reload`, `systemctl enable gameboy.service`, then `systemctl restart gameboy.service` unless `--no-start`.
 11. **Verify and summarize:** check that the ROM named in `game.conf` exists; that `systemctl is-active gameboy` reports active (after a few seconds' wait); that `python3 -c 'import pinpong'` works (warn only: without it the skip button doesn't work, but the game still runs); and whether a controller is visible (`/dev/input/js*`; warn only, since a Bluetooth controller may not be connected yet). Print the installed version and a short pass/warn/fail list, plus the last lines of `journalctl -u gameboy` if the service failed.
 
 ### `fetch-logs.sh` (item 22)
-Runs on the Mac, with the same `--host` option and SSH settings as `deploy.sh`. It shows the `gameboy` service log (`journalctl -u gameboy --no-pager`) followed by the controller events (`journalctl -t unihiker-gb --no-pager`).
+Runs on the Mac, with the same `--host` option and SSH settings as `deploy.sh`. It shows the controller events (`journalctl -t unihiker-gb --no-pager`) followed by the `gameboy` service log (`journalctl -u gameboy --no-pager`), so the service log can be followed live at the end.
 - `--lines <n>`: how many recent lines of each (default 200).
 - `--boot`: only this boot (`-b`).
 - `--follow`: keep watching the service log live (`-f`) until Ctrl+C.

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    name: Lint and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          git ls-files '*.sh' | xargs shellcheck -x
+
+      - name: Python syntax (launcher scripts)
+        run: python3 -m py_compile launcher/*.py
+
+      - name: ROM filename checks
+        run: tests/test-check-roms.sh
+
+  install-test:
+    name: install.sh in arm64 Debian buster
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up arm64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Download packages
+        run: scripts/fetch-packages.sh
+
+      - name: Run install.sh twice and check the result
+        run: scripts/test-in-docker.sh
