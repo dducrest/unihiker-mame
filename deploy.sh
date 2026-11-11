@@ -10,7 +10,6 @@
 #   --pair                     After installing, pair a Bluetooth controller interactively
 #   --bt-ertm-fix              Install the Bluetooth ERTM workaround (only for controllers
 #                              that need it)
-#   --disable-launcher <unit>  Disable the built-in UNIHIKER menu service
 #   --no-start                 Install everything but don't start/restart the emulator service
 #   --set-password             Change the board's root password (interactive)
 #   --forget-host              Forget the board's SSH key first (after a re-flash or when
@@ -30,7 +29,7 @@ STAGING=/tmp/unihiker-gb
 STAGED_DIRS="assets config launcher systemd scripts packages"
 
 usage() {
-  sed -n '2,22s/^# \{0,1\}//p' "$0"
+  sed -n '2,21s/^# \{0,1\}//p' "$0"
   exit "${1:-0}"
 }
 
@@ -51,7 +50,6 @@ while [ $# -gt 0 ]; do
     --roms-dir) need_value "$@"; ROMS_DIR=$2; shift ;;
     --pair) PAIR=yes ;;
     --bt-ertm-fix) INSTALL_ARGS+=(--bt-ertm-fix) ;;
-    --disable-launcher) need_value "$@"; INSTALL_ARGS+=(--disable-launcher "$2"); shift ;;
     --no-start) INSTALL_ARGS+=(--no-start) ;;
     --set-password) SET_PASSWORD=yes ;;
     --forget-host) FORGET_HOST=yes ;;

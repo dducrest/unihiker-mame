@@ -40,7 +40,7 @@ docker run --rm --platform "$PLATFORM" -v "$REPO:/src:ro" "$IMAGE" bash -euo pip
   echo "not a real rom" > "/root/roms/$rom"
   echo "old save" > "/root/roms/Test Game (USA).sav"
 
-  args=(--src /tmp/unihiker-gb --rom-file "$rom" --bt-ertm-fix --disable-launcher example-menu.service)
+  args=(--src /tmp/unihiker-gb --rom-file "$rom" --bt-ertm-fix)
 
   echo "==> First run"
   bash /tmp/unihiker-gb/scripts/install.sh "${args[@]}" | tee /tmp/run1.log
@@ -55,8 +55,6 @@ docker run --rm --platform "$PLATFORM" -v "$REPO:/src:ro" "$IMAGE" bash -euo pip
   check "python3 has tkinter" python3 -c "import tkinter"
   check "boot ROM is set (name with spaces and brackets)" \
     bash -c ". /etc/unihiker-gb/game.conf && [ \"\$ROM_FILE\" = \"$rom\" ]"
-  check "built-in menu service recorded" \
-    bash -c ". /etc/unihiker-gb/board.conf && [ \"\$LAUNCHER_UNIT\" = example-menu.service ]"
   check "old save moved to /root/saves" test -f "/root/saves/Test Game (USA).sav"
   check "old save no longer in /root/roms" test ! -e "/root/roms/Test Game (USA).sav"
   check "version stamp written" grep -q "commit=docker-test" /etc/unihiker-gb/version
