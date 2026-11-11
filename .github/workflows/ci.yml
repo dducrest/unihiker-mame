@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+# CI only reads the code. It publishes nothing (no packages, releases or comments), and the
+# Docker images it pulls are public, so the token needs no other permissions.
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint and unit tests

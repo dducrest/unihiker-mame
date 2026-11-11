@@ -39,7 +39,19 @@ rm -f "$OUT"/*.deb "$OUT/Packages" "$OUT/Release" "$OUT/manifest.txt"
 echo "==> Downloading $PACKAGES and dependencies for $PLATFORM (this takes a few minutes)"
 # The dependency tree is resolved in full (not just what the container lacks), so the
 # board gets newer versions of shared libraries too if its own are older.
-docker run --rm --platform "$PLATFORM" -e PACKAGES="$PACKAGES" -v "$OUT:/out" "$IMAGE" bash -euo pipefail -c '
+#
+# The container runs as root, so on Linux (including CI) the files it writes into packages/
+# would be owned by root, and the host user couldn't change them afterwards. The container
+# therefore writes every file itself (including the whole manifest) and then gives them to
+# the host user (HOST_UID/HOST_GID). On macOS, Docker Desktop maps ownership anyway.
+docker run --rm --platform "$PLATFORM" \
+  -e PACKAGES="$PACKAGES" \
+  -e PLATFORM="$PLATFORM" \
+  -e FETCHED="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -e COMMIT="$(git -C "$REPO" describe --always --dirty 2>/dev/null || echo unknown)" \
+  -e HOST_UID="$(id -u)" \
+  -e HOST_GID="$(id -g)" \
+  -v "$OUT:/out" "$IMAGE" bash -euo pipefail -c '
   # buster is archived. Include the security and point-release updates too: the base
   # image (and most boards) already have those versions of the core libraries.
   cat > /etc/apt/sources.list <<EOF
@@ -63,15 +75,16 @@ EOF
   cd /out
   apt-ftparchive packages . > Packages
   apt-ftparchive release . > Release
-  echo "arch=$(dpkg --print-architecture)" > manifest.txt
+  {
+    echo "arch=$(dpkg --print-architecture)"
+    echo "packages=$PACKAGES"
+    echo "platform=$PLATFORM"
+    echo "fetched=$FETCHED"
+    echo "fetched_from_commit=$COMMIT"
+  } > manifest.txt
+  chown "$HOST_UID:$HOST_GID" ./*.deb Packages Release manifest.txt
+  chmod 0644 ./*.deb Packages Release manifest.txt
 '
-
-{
-  echo "packages=$PACKAGES"
-  echo "platform=$PLATFORM"
-  echo "fetched=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "fetched_from_commit=$(git -C "$REPO" describe --always --dirty 2>/dev/null || echo unknown)"
-} >>"$OUT/manifest.txt"
 
 n=$(find "$OUT" -name '*.deb' | wc -l | tr -d ' ')
 size=$(du -sh "$OUT" | cut -f1)
