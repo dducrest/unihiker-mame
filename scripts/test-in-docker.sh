@@ -68,9 +68,14 @@ docker run --rm --platform "$PLATFORM" -v "$REPO:/src:ro" "$IMAGE" bash -euo pip
   check "controller mapping in mGBA config" grep -q "^keyA=" /root/.config/mgba/config.ini
   timeout 2 /opt/unihiker-gb/hotkeys.py --dry-run >/tmp/hotkeys.log 2>&1 || true
   check "hotkeys.py reads L/R/Select/Start from the mGBA config" \
-    grep -q "L=4 R=5 Select=8 Start=9" /tmp/hotkeys.log
+    grep -q "default mapping: L=4 R=5 Select=8 Start=9" /tmp/hotkeys.log
   check "start-gb.sh is executable" test -x /opt/unihiker-gb/start-gb.sh
   check "systemd unit installed" test -f /etc/systemd/system/gameboy.service
+  check "Bluetooth link security unit installed" test -f /etc/systemd/system/unihiker-gb-bluetooth.service
+  check "bt-link-security.sh is executable" test -x /opt/unihiker-gb/bt-link-security.sh
+  btsec_rc=0; BT_WAIT_SECONDS=1 /opt/unihiker-gb/bt-link-security.sh > /tmp/btsec.log 2>&1 || btsec_rc=$?
+  check "bt-link-security.sh exits 0 without an adapter" test "$btsec_rc" -eq 0
+  check "bt-link-security.sh says there is no adapter" grep -q "no Bluetooth adapter hci0" /tmp/btsec.log
   check "udev rule installed" test -f /etc/udev/rules.d/99-unihiker-gb-controller.rules
   check "ERTM workaround installed" test -f /etc/modprobe.d/unihiker-gb-bluetooth.conf
   check "mGBA config installed" test -f /root/.config/mgba/config.ini

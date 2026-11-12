@@ -68,6 +68,10 @@ wait_for 10 bluetoothctl show >/dev/null 2>&1 ||
 bluetoothctl power on >/dev/null
 [ "$(bluetoothctl show | sed -n 's/^[[:space:]]*Powered: //p')" = yes ] ||
   die "couldn't power the Bluetooth adapter on"
+# Link-level security, so the controller can reconnect after a reboot (see the script).
+if [ -x /opt/unihiker-gb/bt-link-security.sh ]; then
+  BT_WAIT_SECONDS=5 /opt/unihiker-gb/bt-link-security.sh | sed 's/^/    /'
+fi
 
 # One bluetoothctl session stays open in the background for the whole run: it holds the
 # pairing agent (NoInputNoOutput: controllers have no keyboard or screen to confirm a code)
