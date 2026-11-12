@@ -81,6 +81,13 @@ docker run --rm --platform "$PLATFORM" -v "$REPO:/src:ro" "$IMAGE" bash -euo pip
   check "mGBA config installed" test -f /root/.config/mgba/config.ini
   check "only the local apt source was used" grep -q "file:/opt/unihiker-gb/packages" /etc/apt/sources.list.d/unihiker-gb.list
 
+  echo "==> install.sh replaces an outdated mGBA config, keeping a backup"
+  echo "; edited by hand" >> /root/.config/mgba/config.ini
+  bash /tmp/unihiker-gb/scripts/install.sh --src /tmp/unihiker-gb --no-start > /tmp/run3.log 2>&1
+  check "mGBA config matches the repo again" cmp -s /src/config/mgba-config.ini /root/.config/mgba/config.ini
+  check "hand-edited copy kept as a backup" bash -c "grep -l \"edited by hand\" /root/.config/mgba/config.ini.bak-* >/dev/null"
+  check "Xbox controller section installed" grep -q "^\[gba.input-profile.Xbox Wireless Controller\]" /root/.config/mgba/config.ini
+
   echo "==> set-rom.sh"
   echo "another rom" > /root/roms/second.gbc
   check "set-rom.sh accepts a good name" /opt/unihiker-gb/set-rom.sh second.gbc

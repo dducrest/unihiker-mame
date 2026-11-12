@@ -451,7 +451,7 @@ Each step checks first and only changes what's needed, so re-running it is safe.
    - the udev rule into `/etc/udev/rules.d/`, then `udevadm control --reload`
 6. **Settings files** (never silently overwritten, since the user may have edited them on the board):
    - `game.conf`: install the default only if none exists. If `--rom-file` was given, write `ROM_FILE` with the same rules and quoting as `set-rom.sh`.
-   - `mgba-config.ini`: install only if no mGBA config exists. If one exists and differs, save the repo version alongside it as `config.ini.repo` and print a notice.
+   - `mgba-config.ini`: always installed, because the repo copy holds the controller mappings and mGBA 0.7.0's SDL build never writes the file. If the board's copy differs (edited by hand), it's kept as `config.ini.bak-<date-time>` first. (Changed 2026-11-12: it used to be installed only if missing, so new mappings didn't reach a board that already had a config.)
 7. **Version (item 19):** write `/etc/unihiker-gb/version` from the staged `VERSION` file plus the package manifest.
 8. **Bluetooth:** `systemctl enable bluetooth`. With `--bt-ertm-fix`, install `config/bluetooth.conf` as `/etc/modprobe.d/unihiker-gb-bluetooth.conf` and set the option for the current boot too.
 9. **Built-in menu:** nothing to do. The launcher stops the menu at each boot (step 8), so nothing on the board is disabled.

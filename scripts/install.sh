@@ -225,12 +225,19 @@ if [ -n "$ROM_FILE_ARG" ]; then
   fi
 fi
 
-if [ ! -f "$MGBA_CONF" ]; then
-  install -m 0644 "$SRC/config/mgba-config.ini" "$MGBA_CONF"
-  changed "$MGBA_CONF"
-elif ! cmp -s "$SRC/config/mgba-config.ini" "$MGBA_CONF"; then
-  install_file "$SRC/config/mgba-config.ini" "$MGBA_CONF.repo" 0644 || true
-  warn "$MGBA_CONF differs from the repo version; the repo version is saved as config.ini.repo"
+# The repo's mGBA config (controller mappings) is the source of truth, so mapping changes
+# reach the board with every deploy. mGBA 0.7.0's SDL build never writes this file, so the
+# only other changes are edits by hand; those are kept in a dated backup.
+if [ -f "$MGBA_CONF" ] && ! cmp -s "$SRC/config/mgba-config.ini" "$MGBA_CONF"; then
+  backup="$MGBA_CONF.bak-$(date +%Y%m%d-%H%M%S)"
+  cp -p "$MGBA_CONF" "$backup"
+  note "the board's mGBA config differed from the repo; old copy saved as $backup"
+fi
+install_file "$SRC/config/mgba-config.ini" "$MGBA_CONF" 0644 || true
+# Earlier versions saved the repo copy alongside instead of installing it.
+if [ -e "$MGBA_CONF.repo" ]; then
+  rm -f "$MGBA_CONF.repo"
+  changed "removed the old $MGBA_CONF.repo"
 fi
 
 # 7. Version ----------------------------------------------------------------------------
