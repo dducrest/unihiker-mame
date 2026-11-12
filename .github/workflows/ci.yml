@@ -27,6 +27,9 @@ jobs:
       - name: ROM filename checks
         run: tests/test-check-roms.sh
 
+      - name: Bluetooth pairing script (with a stand-in bluetoothctl)
+        run: tests/test-pair-bluetooth.sh
+
   install-test:
     name: install.sh in arm64 Debian buster
     runs-on: ubuntu-latest
