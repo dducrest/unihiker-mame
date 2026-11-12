@@ -80,3 +80,15 @@ If the buttons are wrong on a new controller:
 3. Run `./deploy.sh`. Every deploy installs the repo's mGBA config (the board's old copy is kept as a dated backup).
 
 The save-state shortcuts read the same sections, so they follow the controller automatically.
+
+## Screen orientation
+
+The screen is turned to landscape (320×240), which shows Game Boy games larger than the board's native portrait (240×320). Games are stretched to fill the screen (mGBA 0.7.0 can't keep their aspect ratio). The direction is a setting:
+
+```bash
+./deploy.sh --rotate right     # or left, inverted, normal (portrait, no rotation)
+```
+
+The first deploy sets `right`; later deploys keep the board's setting unless `--rotate` is given. It's stored as `DISPLAY_ROTATION` in `/etc/unihiker-gb/board.conf` on the board.
+
+The board's display can only rotate when the desktop starts, so changing `--rotate` restarts the board's desktop. When button B is held at power-on, the desktop restarts once more in portrait, so the UNIHIKER menu appears the way it was designed; the next normal boot is landscape again. Details: [plans/landscape-display.md](plans/landscape-display.md).

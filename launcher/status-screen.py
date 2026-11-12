@@ -8,6 +8,10 @@ until that has stopped.
 
     status-screen.py [--splash FILE]
 
+The splash is splash.png (240x320) on a portrait screen and splash-landscape.png (320x240)
+on a landscape one (the screen is rotated by set-rotation.sh), falling back to splash.png
+if the landscape image is missing. --splash overrides both.
+
 Must stay compatible with Python 3.7 (Debian buster, Tk 8.6).
 """
 import argparse
@@ -33,10 +37,19 @@ def controller_connected():
     return bool(glob.glob("/dev/input/js*"))
 
 
+def default_splash(folder, width, height):
+    portrait = os.path.join(folder, "splash.png")
+    if width > height:
+        landscape = os.path.join(folder, "splash-landscape.png")
+        if os.path.isfile(landscape):
+            return landscape
+    return portrait
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     here = os.path.dirname(os.path.abspath(__file__))
-    ap.add_argument("--splash", default=os.path.join(here, "splash.png"))
+    ap.add_argument("--splash", help="splash image (default: chosen by screen shape)")
     args = ap.parse_args()
 
     root = tk.Tk()
@@ -45,11 +58,12 @@ def main():
     root.attributes("-fullscreen", True)
     root.attributes("-topmost", True)
     width, height = root.winfo_screenwidth(), root.winfo_screenheight()
+    splash_file = args.splash or default_splash(here, width, height)
 
     # Tk's PhotoImage reads PNG from Tk 8.6 on. Without the image, the screen is just black.
     splash = None
     try:
-        splash = tk.PhotoImage(file=args.splash)
+        splash = tk.PhotoImage(file=splash_file)
     except tk.TclError as e:
         print("status-screen: no splash image (%s)" % e, file=sys.stderr, flush=True)
     image_label = tk.Label(root, image=splash, bg=BG, bd=0) if splash else tk.Label(root, bg=BG)

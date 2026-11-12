@@ -1,0 +1,14 @@
+[Unit]
+Description=Screen orientation for the Game Boy emulator
+# Writes (or removes) the X rotation file from DISPLAY_ROTATION in board.conf before the
+# desktop starts. This is what puts the rotation back after a boot with button B held,
+# which removes it so the UNIHIKER menu appears in portrait (plans/landscape-display.md).
+After=local-fs.target
+Before=lightdm.service display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/unihiker-gb/set-rotation.sh --from-config
+
+[Install]
+WantedBy=multi-user.target

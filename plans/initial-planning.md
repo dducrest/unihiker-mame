@@ -22,6 +22,7 @@ Parts of this plan have been checked on a real M10 (see "Board check results"). 
 | `launcher/hotkeys.py` | Built and working on the board: L+R+Select saves the game state, L+R+Start loads it. Covered by the Docker test (installed, reads the mapping). |
 | `launcher/start-gb.sh`, `status-screen.py`, `check-skip-button.py`, `controller-event.sh`, `systemd/gameboy.service` | **Built and working on the board** (2026-11-12): normal boot, no controller, skip button, and pause/resume on controller disconnect. Also tested in Docker and on a virtual display. Boot time: 28 s. The idle-screen check was skipped. |
 | `scripts/pair-bluetooth.sh` | **Built and working on the board** (2026-11-12): paired an Xbox Wireless Controller through `./deploy.sh --pair`. Also tested with a stand-in `bluetoothctl` by `tests/test-pair-bluetooth.sh` (in CI). |
+| Landscape display: `launcher/set-rotation.sh`, `systemd/unihiker-gb-display.service`, `assets/splash-landscape.png`, `--rotate` | **Built and running on the board** (2026-11-13), turned `right`. Rotation is in the X config (option B in [landscape-display.md](landscape-display.md)): the board's fbdev driver can't rotate with `xrandr`. Games are stretched to 320×240 (mGBA 0.7.0 ignores `lockAspectRatio`; accepted). Tested in Docker. On the board: the skip button brings up the menu in portrait, a reboot is landscape again, and play speed is good. |
 | `docs/recovery.md` | Not written yet. |
 
 ## Board check results (2026-11-11)
@@ -36,6 +37,8 @@ First checks on a real UNIHIKER M10:
 | Bluetooth | Onboard adapter present (`bluetoothctl list` shows a default controller). |
 | CPU frequency | Exposed. Governors: `ondemand`, `userspace`, `interactive` (no `performance`). |
 | `xset`, `xrandr` | Both preinstalled in `/usr/bin`. |
+| Landscape on the board | Works (2026-11-13): holding B at power-on gives the menu in portrait (after a desktop restart); the next boot is landscape again; Game Boy play speed is good; touch works in the menu; boot time unchanged (28 s). |
+| Screen rotation | `xrandr` can't rotate (fbdev driver: only `normal`). `Option "Rotate"` in the X config works, at 320×240 (2026-11-13). The UNIHIKER menu is cut off when rotated. Details: [landscape-display.md](landscape-display.md#phase-0-results-2026-11-13). |
 | Built-in menu | `PyboardUI.service`, a systemd **user** service in root's user manager (`/lib/systemd/user/PyboardUI.service`, `Restart=always`, empty `[Install]` section). It isn't enabled: `/root/.xsessionrc` starts it when lightdm logs root in. The web interface (`startServer.py`) runs separately. |
 | Display | X is started by `lightdm.service` (a system service), which logs root in automatically (`autologin-user=root`). X runs with `-dpms` and the access file `/var/run/lightdm/root/:0`; `/root/.Xauthority` also exists. Root's user manager runs only while that login is active (`Linger=no`). |
 | Stopping the menu | Works: `XDG_RUNTIME_DIR=/run/user/0 systemctl --user stop PyboardUI.service` clears it from the screen, and `... start ...` brings it back (step 8). |
@@ -78,10 +81,12 @@ mGBA plays `.gb`, `.gbc` and `.gba`, so changing the ROM later won't mean changi
 
 ```
 /etc/unihiker-gb/game.conf              <- which ROM to run, by filename (the only file you edit to change games)
-/etc/unihiker-gb/board.conf             <- optional board overrides (e.g. MENU_UNIT); not needed by default
+/etc/unihiker-gb/board.conf             <- screen orientation (DISPLAY_ROTATION, set by --rotate) and optional board overrides (e.g. MENU_UNIT)
 /etc/unihiker-gb/version                <- git commit and date of the last deploy
 /opt/unihiker-gb/start-gb.sh            <- boot flow: splash, skip-button check, wait for controller, launch mGBA
 /opt/unihiker-gb/status-screen.py       <- splash image, then the "connect a controller" prompt
+/opt/unihiker-gb/set-rotation.sh        <- writes/removes the X rotation file (/etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf)
+/etc/systemd/system/unihiker-gb-display.service <- runs set-rotation.sh --from-config at boot, before the desktop
 /opt/unihiker-gb/check-skip-button.py   <- exits 0 if a board button is held at boot
 /opt/unihiker-gb/hotkeys.py             <- controller shortcuts for save states (L+R+Select / L+R+Start)
 /opt/unihiker-gb/bt-link-security.sh    <- Bluetooth link-level security, so paired controllers can reconnect
@@ -90,7 +95,7 @@ mGBA plays `.gb`, `.gbc` and `.gba`, so changing the ROM later won't mean changi
 /opt/unihiker-gb/set-rom.sh             <- changes the boot ROM
 /opt/unihiker-gb/pair-bluetooth.sh      <- pairs a Bluetooth controller
 /opt/unihiker-gb/lib/rom-rules.sh       <- ROM filename rules used by set-rom.sh
-/opt/unihiker-gb/splash.png
+/opt/unihiker-gb/splash.png, splash-landscape.png
 /opt/unihiker-gb/packages/              <- offline .deb packages and their index
 /etc/udev/rules.d/99-unihiker-gb-controller.rules
 /etc/systemd/system/gameboy.service
@@ -126,6 +131,7 @@ These are the scripts and files this repo will contain. Most of them are install
 deploy.sh                          # Mac: checks ROMs, sets up SSH, pushes this repo to the board, runs install.sh
 fetch-logs.sh                      # Mac: shows recent emulator logs from the board
 assets/splash.png                  # placeholder 240×320 splash image, installed to /opt/unihiker-gb/
+assets/splash-landscape.png        # the same placeholder at 320×240, for the rotated screen
 config/game.conf                   # default ROM selection
 config/mgba-config.ini             # mGBA settings; per-controller overrides added after step 3 if needed
 config/99-unihiker-gb-controller.rules  # udev rule that calls controller-event.sh
@@ -136,8 +142,10 @@ launcher/check-skip-button.py
 launcher/hotkeys.py
 launcher/bt-link-security.sh
 launcher/controller-event.sh
+launcher/set-rotation.sh           # set-rotation.sh <left|right|inverted|normal> | --from-config
 systemd/gameboy.service
 systemd/unihiker-gb-bluetooth.service   # runs bt-link-security.sh whenever bluetooth.service starts
+systemd/unihiker-gb-display.service     # writes the X rotation file at boot (set-rotation.sh --from-config)
 scripts/lib/common.sh              # Mac: shared settings for deploy.sh and fetch-logs.sh (host, SSH key, known-hosts file)
 scripts/lib/rom-rules.sh           # Mac and board: ROM filename rules shared by check-roms.sh, install.sh and set-rom.sh
 scripts/check-roms.sh              # Mac: flags ROM filenames that will cause problems (run by deploy.sh, or on its own)
@@ -645,4 +653,4 @@ The project's goal is to make deploying and configuring the UNIHIKER as simple a
   (Alternative: keep `ondemand` and run `cat scaling_max_freq > scaling_min_freq`.) If that fixes it, add it to the launcher. If not, try `gnuboy`, which is lighter. Sound is already off.
 - **Emulator or splash can't open the display** ("cannot open display" or "No protocol specified" in `./fetch-logs.sh`): check that `XAUTHORITY` in the launcher points at a file that exists (`/var/run/lightdm/root/:0`, or `/root/.Xauthority`).
 - **Menu not stopped** ("couldn't stop PyboardUI.service"): root's user manager wasn't running yet. Check `ls /run/user/0/systemd/private` and raise the 20-second wait in the launcher.
-- **Screen orientation:** if the picture comes out rotated or stretched, check the X screen settings before blaming mGBA.
+- **Screen orientation:** if the picture comes out rotated the wrong way, use `./deploy.sh --rotate left` (or `right`, or `normal` for portrait). Stretching is expected (mGBA 0.7.0 ignores `lockAspectRatio`). If the screen stays black after changing it: `rm /etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf && systemctl restart lightdm` over SSH, then `./deploy.sh --rotate normal`.
