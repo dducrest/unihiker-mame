@@ -57,9 +57,13 @@ To get the UNIHIKER's own menu instead of the game, hold **button B** on the boa
 | Controller | Connection | Notes |
 |---|---|---|
 | Generic USB gamepad | USB | Uses the default mapping. |
-| Third-party Bluetooth controller sold as a Nintendo Switch 2 replacement | Bluetooth | Identifies itself as **"Xbox Wireless Controller"**, although it isn't a Microsoft controller. Needs its own button mapping and link-level security; see below. |
+| Third-party Bluetooth controller sold as a Nintendo Switch 2 replacement | Bluetooth | Identifies itself as **"Xbox Wireless Controller"**, although it isn't a Microsoft controller. Needs its own button mapping and link-level security; see below and [CONTROLLER.md](CONTROLLER.md). |
 
 #### The "Xbox Wireless Controller" (Switch 2 replacement)
+
+To put it in Bluetooth pairing mode, hold **B** and **HOME** together until LED2 and LED3 flash. [CONTROLLER.md](CONTROLLER.md) has the maker's pairing instructions and button-mode shortcuts.
+
+If the buttons suddenly seem swapped, check whether one of the controller's own mode shortcuts was pressed: **Capture + L3** (held about 1 s, the controller vibrates once) switches the D-pad and left stick, and **Capture + R3** switches A/B and X/Y. The modes cycle, so press the same shortcut again until the buttons are back. (The maker documents these for Android, iOS and Windows; they're untested here.) The mapping in this repo assumes the controller's default mode.
 
 This controller reports the name and device type of an Xbox controller, so Linux, SDL and mGBA all treat it as one. Three things follow from that:
 
