@@ -160,16 +160,22 @@ docker run --rm --platform "$PLATFORM" -v "$REPO:/src:ro" "$IMAGE" bash -euo pip
   check "controller-event.sh handles remove with nothing running" /opt/unihiker-gb/controller-event.sh remove
   check "controller-event.sh handles add with nothing running" /opt/unihiker-gb/controller-event.sh add
   # A process named mgba stands in for the emulator.
-  mkdir -p /tmp/fake && cp /bin/sleep /tmp/fake/mgba && /tmp/fake/mgba 60 & fake=$!
-  sleep 1
-  state() { sed -n "s/^State:[[:space:]]*\([A-Z]\).*/\1/p" "/proc/$(pidof mgba)/status"; }
+  # Wait until it really runs: under arm64 emulation in CI, starting it can take seconds.
+  mkdir -p /tmp/fake && cp /bin/sleep /tmp/fake/mgba
+  /tmp/fake/mgba 120 & fake=$!
+  for _ in $(seq 30); do pidof mgba >/dev/null && break; sleep 1; done
+  check "stand-in mgba process is running" pidof mgba
+  # state: the process state letter (S running/sleeping, T stopped). The kernel applies
+  # SIGSTOP/SIGCONT asynchronously, so state_is waits briefly for the expected one.
+  state() { sed -n "s/^State:[[:space:]]*\([A-Z]\).*/\1/p" "/proc/$fake/status"; }
+  state_is() { for _ in $(seq 10); do [ "$(state)" = "$1" ] && return 0; sleep 0.5; done; return 1; }
   /opt/unihiker-gb/controller-event.sh remove
-  check "last controller removed: mGBA frozen" test "$(state)" = T
+  check "last controller removed: mGBA frozen" state_is T
   /opt/unihiker-gb/controller-event.sh add
-  check "controller added: mGBA running again" test "$(state)" = S
+  check "controller added: mGBA running again" state_is S
   touch /dev/input/js1
   /opt/unihiker-gb/controller-event.sh remove
-  check "one of two controllers removed: mGBA keeps running" test "$(state)" = S
+  check "one of two controllers removed: mGBA keeps running" state_is S
   rm -f /dev/input/js1
   kill "$fake" 2>/dev/null || true
 
