@@ -21,7 +21,7 @@ Parts of this plan have been checked on a real M10 (see "Board check results"). 
 | Config files, `gameboy.service`, udev rule, `assets/splash.png` | Built (splash is a placeholder). `config/mgba-config.ini` has the controller mapping confirmed on the board. |
 | `launcher/hotkeys.py` | Built and working on the board: L+R+Select saves the game state, L+R+Start loads it. Covered by the Docker test (installed, reads the mapping). |
 | `launcher/start-gb.sh`, `status-screen.py`, `check-skip-button.py`, `controller-event.sh`, `systemd/gameboy.service` | **Built and working on the board** (2026-11-12): normal boot, no controller, skip button, and pause/resume on controller disconnect. Also tested in Docker and on a virtual display. Boot time: 28 s. The idle-screen check was skipped. |
-| `scripts/pair-bluetooth.sh` | **Placeholder.** Installs cleanly but does nothing yet. |
+| `scripts/pair-bluetooth.sh` | **Written, not yet run on the board.** Tested with a stand-in `bluetoothctl` by `tests/test-pair-bluetooth.sh` (in CI). |
 | `docs/recovery.md` | Not written yet. |
 
 ## Board check results (2026-11-11)
@@ -52,7 +52,8 @@ First checks on a real UNIHIKER M10:
 
 ## Next steps
 
-1. **`pair-bluetooth.sh`** and **`docs/recovery.md`**.
+1. **Test `pair-bluetooth.sh` on the board** with a Bluetooth controller: `./deploy.sh --pair`, or `ssh -t root@10.1.2.3 /opt/unihiker-gb/pair-bluetooth.sh` to pair without redeploying (the script must be deployed first). Then reboot and check the controller reconnects by itself.
+2. **`docs/recovery.md`**.
 
 ## What you're working with
 
@@ -141,6 +142,8 @@ scripts/pair-bluetooth.sh          # board: interactive helper for pairing a con
 scripts/set-rom.sh                 # board: set-rom.sh <filename> updates game.conf, restarts the service
 docs/recovery.md                   # how to restore the board's factory image (item 6)
 tests/test-check-roms.sh           # Mac or CI: tests check-roms.sh with good and bad filenames
+tests/test-pair-bluetooth.sh       # Mac or CI (Docker): tests pair-bluetooth.sh with a stand-in bluetoothctl
+tests/fakes/bluetoothctl           # the stand-in: simulates BlueZ 5.50 with a gamepad, a phone and an unnamed device
 .github/workflows/ci.yml           # shellcheck + test-in-docker on every push
 .shellcheckrc                      # lets shellcheck find the shared libraries
 packages/                          # offline .deb packages; contents are gitignored
@@ -454,7 +457,20 @@ Runs on the Mac, with the same `--host` option and SSH settings as `deploy.sh`. 
 - `--follow`: keep watching the service log live (`-f`) until Ctrl+C.
 
 ### `pair-bluetooth.sh`
-Needs a person: put the controller in pairing mode, pick it from a list. `deploy.sh --pair` runs it at the end of a deploy, and it can also be run on its own later to pair a new controller. It runs a `bluetoothctl` scan for about 15 seconds, lists the devices it found, asks which one to use, then runs `pair`, `trust` and `connect` on it. Afterwards it restarts `gameboy.service` so mGBA sees the controller.
+Needs a person: put the controller in pairing mode, pick it from a list. `deploy.sh --pair` runs it at the end of a deploy, and it can also be run on its own later to pair a new controller:
+```bash
+./deploy.sh --pair                                                     # deploy, then pair
+ssh -t root@10.1.2.3 /opt/unihiker-gb/pair-bluetooth.sh                # pair only
+ssh -t root@10.1.2.3 /opt/unihiker-gb/pair-bluetooth.sh --mac XX:XX:XX:XX:XX:XX   # no scan
+```
+Written: [`scripts/pair-bluetooth.sh`](../scripts/pair-bluetooth.sh). It:
+1. Starts the `bluetooth` service if needed and powers the adapter on.
+2. Opens one `bluetoothctl` session in the background for the whole run, holding a `NoInputNoOutput` pairing agent (controllers can't confirm a code) and the scan. BlueZ 5.50 runs the other commands (`devices`, `info`, `trust`, `connect`) as one-off calls.
+3. Asks you to put the controller in pairing mode, scans for 15 s (`--scan-seconds`), and lists what it found: gamepads first (BlueZ icon `input-gaming`, tagged `[controller]`), unnamed devices last. Enter picks the first.
+4. Pairs (waits up to 30 s), trusts (so it reconnects by itself after a reboot), connects, and waits for `/dev/input/js*`. If it connects and then drops, it suggests `--bt-ertm-fix`.
+5. Restarts `gameboy.service` if it's enabled (`--no-restart` to skip).
+
+Tested by `tests/test-pair-bluetooth.sh` (also in CI) against a stand-in `bluetoothctl` (`tests/fakes/bluetoothctl`): scan and pick, `--mac` with an already-paired device, failed pairing, and bad input. ⚠️ Not yet run with a real Bluetooth controller.
 
 ### Script conventions
 - **Board scripts:** `#!/bin/bash` with `set -euo pipefail`, bash 5.0 (buster). Python scripts must run on Python 3.7.

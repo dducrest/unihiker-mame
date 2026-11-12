@@ -1,0 +1,28 @@
+#!/bin/bash
+# Stand-in for bluetoothctl 5.50. State in /tmp/bt. FAKE_PAIR=fail makes pairing never finish.
+S=/tmp/bt; mkdir -p $S
+log() { echo "$*" >> $S/calls; }
+GP=AA:BB:CC:DD:EE:01; PH=AA:BB:CC:DD:EE:02; UN=AA:BB:CC:DD:EE:03
+if [ $# -eq 0 ]; then
+  while read -r line; do
+    log "session: $line"
+    case $line in
+      "scan on") touch $S/scanned ;;
+      "pair "*) [ "${FAKE_PAIR:-}" = fail ] && { echo "Failed to pair: org.bluez.Error.AuthenticationFailed"; continue; }
+                (sleep 2; touch "$S/paired.${line#pair }") & ;;
+      quit) exit 0 ;;
+    esac
+  done; exit 0
+fi
+log "cmd: $*"
+case $1 in
+  show) printf 'Controller 00:E0:4C:50:BB:94 (public)\n\tName: unihiker\n\tPowered: %s\n' "$( [ -e $S/powered ] && echo yes || echo no)" ;;
+  power) touch $S/powered ;;
+  devices) [ -e $S/scanned ] && printf 'Device %s Phone\nDevice %s AA-BB-CC-DD-EE-03\nDevice %s Wireless Gamepad\n' $PH $UN $GP ;;
+  info) m=$2; case $m in "$GP") n="Wireless Gamepad"; i=input-gaming;; "$PH") n=Phone; i=phone;; *) n=AA-BB-CC-DD-EE-03; i="";; esac
+        yn() { [ -e "$S/$1.$m" ] && echo yes || echo no; }
+        printf 'Device %s (public)\n\tName: %s\n' "$m" "$n"; [ -n "$i" ] && printf '\tIcon: %s\n' "$i"
+        printf '\tPaired: %s\n\tTrusted: %s\n\tConnected: %s\n' "$(yn paired)" "$(yn trusted)" "$(yn connected)" ;;
+  trust) touch "$S/trusted.$2" ;;
+  connect) touch "$S/connected.$2"; mkdir -p /dev/input; touch /dev/input/js0 ;;
+esac
