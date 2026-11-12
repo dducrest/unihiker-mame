@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# CI only reads the code. It publishes nothing (no packages, releases or comments), and the
+# Docker images it pulls are public, so the token needs no other permissions.
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          git ls-files '*.sh' | xargs shellcheck -x
+
+      - name: Python syntax (launcher scripts)
+        run: python3 -m py_compile launcher/*.py
+
+      - name: ROM filename checks
+        run: tests/test-check-roms.sh
+
+      - name: Bluetooth pairing script (with a stand-in bluetoothctl)
+        run: tests/test-pair-bluetooth.sh
+
+  install-test:
+    name: install.sh in arm64 Debian buster
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up arm64 emulation
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Download packages
+        run: scripts/fetch-packages.sh
+
+      - name: Run install.sh twice and check the result
+        run: scripts/test-in-docker.sh

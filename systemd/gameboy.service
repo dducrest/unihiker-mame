@@ -1,0 +1,16 @@
+[Unit]
+Description=Game Boy emulator
+After=graphical.target lightdm.service bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+ExecStart=/opt/unihiker-gb/start-gb.sh
+Restart=on-failure
+RestartSec=3
+# start-gb.sh exits 2 when a setting is wrong (missing ROM, bad game.conf). Restarting
+# wouldn't help, and the built-in menu is still running, so don't.
+RestartPreventExitStatus=2
+User=root
+
+[Install]
+WantedBy=graphical.target

@@ -1,6 +1,6 @@
 # Initial plan: Game Boy emulator on the UNIHIKER M10
 
-Nothing here has been tested on an M10 yet. Check the items marked ⚠️ on the board.
+Parts of this plan have been checked on a real M10 (see "Board check results"). Items marked ⚠️ still need checking on the board.
 
 ## Goals
 
@@ -9,14 +9,62 @@ Nothing here has been tested on an M10 yet. Check the items marked ⚠️ on the
 - At first the board boots straight into **one specific ROM**.
 - Choosing the ROM is **configuration, not code.** Changing the game later, or adding a game picker, shouldn't mean rewriting the launch script or the service.
 
+## Implementation status (2026-11-11)
+
+| Part | Status |
+|---|---|
+| `deploy.sh`, `fetch-logs.sh`, `scripts/lib/common.sh` | Built. Tested on macOS against a buster container running sshd: first login with the default password, re-deploy, `--pull-saves`, clock, changed host key, `--forget-host`, unreachable board, bad ROM name. `fetch-logs.sh` reached the container but needs the board's systemd journal to show anything. |
+| `scripts/check-roms.sh`, `scripts/lib/rom-rules.sh` | Built. Tested by `tests/test-check-roms.sh` on macOS's bash 3.2. |
+| `scripts/fetch-packages.sh` | Built. Downloads 246 arm64 packages (82 MB), including `xdotool` for the save-state shortcuts. |
+| `scripts/install.sh`, `scripts/set-rom.sh` | Built. `scripts/test-in-docker.sh` runs `install.sh` twice in an arm64 buster container: all checks pass and the second run changes nothing. Run on the board with `deploy.sh --no-start`: packages, program files and the mGBA config install, and mGBA runs. Starting the service, and the udev and Bluetooth steps in use, are untested until the real launcher exists. |
+| CI (`.github/workflows/ci.yml`) | Built and passing on GitHub. shellcheck, Python syntax check, ROM filename tests, and the Docker install test under arm64 emulation. |
+| Config files, `gameboy.service`, udev rule, `assets/splash.png` | Built (splash is a placeholder). `config/mgba-config.ini` has the controller mapping confirmed on the board. |
+| `launcher/hotkeys.py` | Built and working on the board: L+R+Select saves the game state, L+R+Start loads it. Covered by the Docker test (installed, reads the mapping). |
+| `launcher/start-gb.sh`, `status-screen.py`, `check-skip-button.py`, `controller-event.sh`, `systemd/gameboy.service` | **Built and working on the board** (2026-11-12): normal boot, no controller, skip button, and pause/resume on controller disconnect. Also tested in Docker and on a virtual display. Boot time: 28 s. The idle-screen check was skipped. |
+| `scripts/pair-bluetooth.sh` | **Built and working on the board** (2026-11-12): paired an Xbox Wireless Controller through `./deploy.sh --pair`. Also tested with a stand-in `bluetoothctl` by `tests/test-pair-bluetooth.sh` (in CI). |
+| `docs/recovery.md` | Not written yet. |
+
+## Board check results (2026-11-11)
+
+First checks on a real UNIHIKER M10:
+
+| Check | Result |
+|---|---|
+| USB connection from macOS | Works, after setting System Settings → Privacy & Security → **Allow accessories to connect** to **Always** for the first connection. The "Allow" prompt disappears too quickly to click, probably because the board reconnects while setting up its USB network. After the first connection the setting can go back to "Ask for new accessories". |
+| Package architecture | `arm64`, which matches the downloaded packages. |
+| `pinpong` and buttons | Preinstalled. Connects to the co-processor on `/dev/ttyS3` in 0.9 s (with the menu stopped). Button A is `P27`, button B is `P28`; both read **0 when pressed**, 1 when released. The extension's `button_a` / `button_b` also work but lag one reading behind the pins. |
+| Bluetooth | Onboard adapter present (`bluetoothctl list` shows a default controller). |
+| CPU frequency | Exposed. Governors: `ondemand`, `userspace`, `interactive` (no `performance`). |
+| `xset`, `xrandr` | Both preinstalled in `/usr/bin`. |
+| Built-in menu | `PyboardUI.service`, a systemd **user** service in root's user manager (`/lib/systemd/user/PyboardUI.service`, `Restart=always`, empty `[Install]` section). It isn't enabled: `/root/.xsessionrc` starts it when lightdm logs root in. The web interface (`startServer.py`) runs separately. |
+| Display | X is started by `lightdm.service` (a system service), which logs root in automatically (`autologin-user=root`). X runs with `-dpms` and the access file `/var/run/lightdm/root/:0`; `/root/.Xauthority` also exists. Root's user manager runs only while that login is active (`Linger=no`). |
+| Stopping the menu | Works: `XDG_RUNTIME_DIR=/run/user/0 systemctl --user stop PyboardUI.service` clears it from the screen, and `... start ...` brings it back (step 8). |
+| Controller in mGBA | Works with the mapping in `config/mgba-config.ini`: A = button 1, B = 2, Start = 9, Select = 8, D-pad = axes 0/1. mGBA 0.7.0 ignores SDL's controller database (item 14), so the database was removed. |
+| mGBA speed | Runs smoothly at the default CPU settings. |
+| In-game saves | Work: `-C savegamePath=/root/saves` is honored. The `.sav` file is written to `/root/saves/`, not next to the ROM, and loads on the next start. |
+| Save-state shortcuts | Work: L+R+Select saves and L+R+Start loads, through `launcher/hotkeys.py` and `xdotool`. L = button 4, R = button 5. |
+| Launcher: normal boot | Works (2026-11-12): splash, menu stopped, skip check (B not held), controller found, mGBA starts the ROM, save-state shortcuts running. About 2 s from X being ready to mGBA starting. |
+| Launcher: boot with no controller | Works (2026-11-12): the prompt appears, and the game starts when the controller is turned on. |
+| Launcher: skip button | Works (2026-11-12): holding button B while powering on brings up the UNIHIKER menu instead of the game. |
+| Launcher: controller disconnect | Works (2026-11-12): the game freezes when the controller goes, and resumes with working buttons when it reconnects (SIGSTOP/SIGCONT). |
+| Boot time | **28 s** from power-on until the game is playable (stopwatch, 2026-11-12). The launcher's own part is short: about 2 s from X being ready to mGBA starting. The rest is the board's own start-up (kernel, systemd, X). |
+| Bluetooth controller | Xbox Wireless Controller, paired with `./deploy.sh --pair`. Its buttons are numbered differently from the USB controller (A = 1, B = 0, L = 4, R = 5, Select = 6, Start = 7; D-pad is a hat, which mGBA maps by default), so it has its own section, `[gba.input-profile.Xbox Wireless Controller]`, in `config/mgba-config.ini`. mGBA and `hotkeys.py` pick the section by the controller's name, so switching controllers needs no change. |
+| Bluetooth reconnect | **Failed at first, fixed with link-level security** (2026-11-12). After a reboot the paired Xbox controller connected and was dropped about 4 s later. `btmon` showed a race: the controller asks for its HID channel (L2CAP PSM 17) about 14 ms before the board has registered that the link is encrypted; the 4.4 kernel refuses it ("security block"), the controller doesn't retry, and the board disconnects ("Authentication Failure"). The ERTM workaround was active and made no difference: the failure happens before ERTM matters. `hciconfig hci0 auth encrypt` (encrypt each link while it's set up) made the controller connect immediately. Applied at every boot by `unihiker-gb-bluetooth.service` (`launcher/bt-link-security.sh`). |
+| Clock | Wrong at boot (showed 2023-05-29), so the board doesn't keep the time. `deploy.sh` sets it on every deploy (item 2). |
+
+## Next steps
+
+1. **Check both controllers on the board** with the updated `config/mgba-config.ini` and `hotkeys.py`: the Xbox controller uses its own section, the USB controller the default one, including the save-state shortcuts. Also check, after `./deploy.sh` (installs the link-security service): the Xbox controller reconnects by itself after a reboot, and pairing a controller still works (`ssh -t root@10.1.2.3 /opt/unihiker-gb/pair-bluetooth.sh`).
+2. **`docs/recovery.md`**.
+
 ## What you're working with
 
 | Spec | Why it matters |
 |---|---|
 | Rockchip RK3308, 4× Cortex-A35 @ 1.2 GHz, 512 MB RAM | Fast enough for Game Boy / Game Boy Color with a native (C) emulator. Python emulators will struggle. |
 | 2.8" 240×320 touchscreen, portrait | The Game Boy screen is 160×144, so it scales to 240×216 and leaves room at the bottom. The splash screen is 240×320. |
-| Debian 10 (buster), X server on `:0` | Packages are installed **offline** from `.deb` files prepared on the Mac (item 1). GUI apps run with `DISPLAY=:0`. Python is 3.7. ⚠️ Check the package architecture with `dpkg --print-architecture` (expected `arm64`). |
-| USB-A port, Wi-Fi + Bluetooth 4.0 | A USB controller plugs in directly. A Bluetooth controller pairs through BlueZ. |
+| Debian 10 (buster), X server on `:0` | Packages are installed **offline** from `.deb` files prepared on the Mac (item 1). GUI apps run with `DISPLAY=:0`. Python is 3.7. Package architecture: `arm64` (confirmed). |
+| USB-A port, Wi-Fi + Bluetooth 4.0 | A USB controller plugs in directly. A Bluetooth controller pairs through BlueZ with the onboard adapter (confirmed). |
 | Only buttons A and B, wired to a co-processor | No D-pad, which is why an external controller is required. The buttons are still used once, at boot, to skip the emulator (item 16). |
 | No speaker (⚠️ may have only a buzzer) | Sound is turned off (item 15). |
 
@@ -30,14 +78,19 @@ mGBA plays `.gb`, `.gbc` and `.gba`, so changing the ROM later won't mean changi
 
 ```
 /etc/unihiker-gb/game.conf              <- which ROM to run, by filename (the only file you edit to change games)
-/etc/unihiker-gb/board.conf             <- board settings written by install.sh (e.g. the built-in menu's service name)
+/etc/unihiker-gb/board.conf             <- optional board overrides (e.g. MENU_UNIT); not needed by default
 /etc/unihiker-gb/version                <- git commit and date of the last deploy
 /opt/unihiker-gb/start-gb.sh            <- boot flow: splash, skip-button check, wait for controller, launch mGBA
 /opt/unihiker-gb/status-screen.py       <- splash image, then the "connect a controller" prompt
 /opt/unihiker-gb/check-skip-button.py   <- exits 0 if a board button is held at boot
+/opt/unihiker-gb/hotkeys.py             <- controller shortcuts for save states (L+R+Select / L+R+Start)
+/opt/unihiker-gb/bt-link-security.sh    <- Bluetooth link-level security, so paired controllers can reconnect
+/etc/systemd/system/unihiker-gb-bluetooth.service <- runs bt-link-security.sh whenever Bluetooth starts
 /opt/unihiker-gb/controller-event.sh    <- pauses/resumes mGBA when the controller disconnects/reconnects
+/opt/unihiker-gb/set-rom.sh             <- changes the boot ROM
+/opt/unihiker-gb/pair-bluetooth.sh      <- pairs a Bluetooth controller
+/opt/unihiker-gb/lib/rom-rules.sh       <- ROM filename rules used by set-rom.sh
 /opt/unihiker-gb/splash.png
-/opt/unihiker-gb/gamecontrollerdb.txt   <- SDL controller mappings for common gamepads
 /opt/unihiker-gb/packages/              <- offline .deb packages and their index
 /etc/udev/rules.d/99-unihiker-gb-controller.rules
 /etc/systemd/system/gameboy.service
@@ -49,7 +102,7 @@ mGBA plays `.gb`, `.gbc` and `.gba`, so changing the ROM later won't mean changi
 Each piece does one job:
 - **The ROM is chosen in one place.** `game.conf` sets `ROM_FILE`, a filename inside `/root/roms/`, and nothing else hard-codes a ROM.
 - **The launcher doesn't care which game it runs.** It runs whatever `game.conf` names and fails with a clear message if the file is missing.
-- **Controller setup is separate from game setup.** Mappings come from `gamecontrollerdb.txt` and mGBA's config, so they stay the same when the ROM changes.
+- **Controller setup is separate from game setup.** Button mappings live in mGBA's config, so they stay the same when the ROM changes.
 - **Saves are separate from ROMs.** Copying, replacing or removing ROMs can never touch a save.
 - **Plan for later:** a game picker only needs to write `ROM_FILE` into `game.conf` and run `systemctl restart gameboy`. The launcher and the service stay as they are.
 
@@ -57,12 +110,13 @@ Each piece does one job:
 
 1. systemd starts `gameboy.service` once the desktop (X) is up.
 2. `start-gb.sh` turns off screen blanking and shows the **splash screen** (`status-screen.py` in the background).
-3. **Skip check:** if a board button is held, the launcher closes the splash, starts the built-in UNIHIKER menu for this boot only, and exits.
-4. **Wait for a controller.** If none is found after a few seconds, the screen switches to a prompt:
+3. **Stop the built-in menu:** lightdm's automatic login has already started the UNIHIKER menu (`PyboardUI.service`). The launcher stops it for this boot (`systemctl --user stop`), so it may show for a moment before the splash covers it. Nothing is disabled, so the board's own setup is never changed.
+4. **Skip check:** if a board button is held, the launcher closes the splash, starts the menu again, and exits.
+5. **Wait for a controller.** If none is found after a few seconds, the screen switches to a prompt:
    > No controller found. Turn on or plug in a controller.
    > To use the UNIHIKER menu instead: power off, then hold button B while powering on until the menu appears.
-5. When a controller appears, the prompt closes and mGBA starts the ROM in fullscreen, with sound off.
-6. **During play:** if the controller disconnects (unplugged, or a Bluetooth controller goes to sleep), mGBA is paused. It resumes when the controller reconnects.
+6. When a controller appears, the prompt closes and mGBA starts the ROM in fullscreen, with sound off.
+7. **During play:** if the controller disconnects (unplugged, or a Bluetooth controller goes to sleep), mGBA is paused. It resumes when the controller reconnects.
 
 ## Repository layout
 
@@ -74,15 +128,18 @@ fetch-logs.sh                      # Mac: shows recent emulator logs from the bo
 assets/splash.png                  # placeholder 240×320 splash image, installed to /opt/unihiker-gb/
 config/game.conf                   # default ROM selection
 config/mgba-config.ini             # mGBA settings; per-controller overrides added after step 3 if needed
-config/gamecontrollerdb.txt        # copy of SDL_GameControllerDB (see item 14)
 config/99-unihiker-gb-controller.rules  # udev rule that calls controller-event.sh
 config/bluetooth.conf              # modprobe option for the ERTM workaround (installed only if asked for)
 launcher/start-gb.sh
 launcher/status-screen.py
 launcher/check-skip-button.py
+launcher/hotkeys.py
+launcher/bt-link-security.sh
 launcher/controller-event.sh
 systemd/gameboy.service
+systemd/unihiker-gb-bluetooth.service   # runs bt-link-security.sh whenever bluetooth.service starts
 scripts/lib/common.sh              # Mac: shared settings for deploy.sh and fetch-logs.sh (host, SSH key, known-hosts file)
+scripts/lib/rom-rules.sh           # Mac and board: ROM filename rules shared by check-roms.sh, install.sh and set-rom.sh
 scripts/check-roms.sh              # Mac: flags ROM filenames that will cause problems (run by deploy.sh, or on its own)
 scripts/fetch-packages.sh          # Mac (needs Docker): downloads the .deb packages into packages/
 scripts/test-in-docker.sh          # Mac or CI: runs install.sh in an arm64 buster container
@@ -90,7 +147,11 @@ scripts/install.sh                 # board: installs packages and files, enables
 scripts/pair-bluetooth.sh          # board: interactive helper for pairing a controller
 scripts/set-rom.sh                 # board: set-rom.sh <filename> updates game.conf, restarts the service
 docs/recovery.md                   # how to restore the board's factory image (item 6)
+tests/test-check-roms.sh           # Mac or CI: tests check-roms.sh with good and bad filenames
+tests/test-pair-bluetooth.sh       # Mac or CI (Docker): tests pair-bluetooth.sh with a stand-in bluetoothctl
+tests/fakes/bluetoothctl           # the stand-in: simulates BlueZ 5.50 with a gamepad, a phone and an unnamed device
 .github/workflows/ci.yml           # shellcheck + test-in-docker on every push
+.shellcheckrc                      # lets shellcheck find the shared libraries
 packages/                          # offline .deb packages; contents are gitignored
 packages/.gitignore
 roms/                              # local ROM library to deploy; contents are gitignored
@@ -120,19 +181,21 @@ The manual steps below describe what the scripts automate. Do them by hand once 
 # On the Mac (needs Docker Desktop)
 scripts/fetch-packages.sh            # fills packages/ with arm64 buster .debs and a package index
 
-# Over USB, the board shows up at 10.1.2.3 (plug-and-play on macOS)
+# Over USB, the board shows up at 10.1.2.3. First connection only: set System Settings →
+# Privacy & Security → Allow accessories to connect → Always (see Board check results)
 ssh root@10.1.2.3                    # default password: dfrobot (change it)
-dpkg --print-architecture            # ⚠️ must match the packages (expected: arm64)
+dpkg --print-architecture            # must match the packages: arm64 (confirmed on the board)
 ```
-Copy the packages and ROMs over, then install from the local folder (no internet needed):
+Create the folders, copy the packages and ROMs over, then install from the local folder (no internet needed):
 ```bash
+ssh root@10.1.2.3 'mkdir -p /root/roms /root/saves /etc/unihiker-gb /opt/unihiker-gb'
 scp -r packages root@10.1.2.3:/opt/unihiker-gb/
 scp roms/game.gb root@10.1.2.3:/root/roms/      # homebrew or dumps of cartridges you own
 # on the board:
 echo 'deb [trusted=yes] file:/opt/unihiker-gb/packages ./' > /etc/apt/sources.list.d/unihiker-gb.list
 apt-get update -o Dir::Etc::sourcelist=sources.list.d/unihiker-gb.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
-apt-get install -y --no-download mgba-sdl bluez joystick python3-tk
-mkdir -p /root/roms /root/saves /etc/unihiker-gb /opt/unihiker-gb
+apt-get install -y --no-install-recommends -o Dir::Etc::sourcelist=sources.list.d/unihiker-gb.list -o Dir::Etc::sourceparts=- \
+  mgba-sdl bluez joystick python3-tk xdotool
 ```
 Pointing apt at the local folder only is the same idea as `dpkg -i`, but apt works out the install order and skips packages the board already has.
 
@@ -157,19 +220,26 @@ bluetoothctl
   quit
 systemctl enable bluetooth
 ```
-- ⚠️ Some controllers (Xbox-style ones in particular) won't stay connected unless ERTM is turned off: `echo 1 > /sys/module/bluetooth/parameters/disable_ertm`. To keep that setting across reboots, add `options bluetooth disable_ertm=1` to `/etc/modprobe.d/bluetooth.conf`.
-- ⚠️ Check that the onboard Bluetooth shows up (`bluetoothctl list`). If it doesn't, a USB Bluetooth dongle is the fallback, but it takes the USB port.
+- ⚠️ Some controllers (Xbox-style ones in particular) won't stay connected unless ERTM is turned off: `echo 1 > /sys/module/bluetooth/parameters/disable_ertm`. To keep that setting across reboots, add `options bluetooth disable_ertm=1` to `/etc/modprobe.d/bluetooth.conf`. On this board it wasn't the problem for the Xbox Wireless Controller (2026-11-12), so `--bt-ertm-fix` stays optional, for controllers that keep dropping during play.
+- ✅ **Reconnecting after a reboot needs link-level security** on this board (kernel 4.4, Realtek adapter): `hciconfig hci0 auth encrypt`. Without it the Xbox Wireless Controller pairs but can't reconnect (see Board check results). `install.sh` installs `launcher/bt-link-security.sh` and `unihiker-gb-bluetooth.service`, which applies the setting each time `bluetooth.service` starts (it's lost on reboot), and `pair-bluetooth.sh` applies it too. It's on by default: it only means each connection is authenticated and encrypted while it's set up, which paired controllers do anyway. ⚠️ Check that pairing a new controller still works with it on.
+- ✅ The onboard Bluetooth adapter shows up in `bluetoothctl list` (board, 2026-11-11).
 
 ### 3. Test manually and check the controller mapping
 ```bash
-DISPLAY=:0 SDL_AUDIODRIVER=dummy \
-  SDL_GAMECONTROLLERCONFIG="$(grep -i 'platform:Linux' /opt/unihiker-gb/gamecontrollerdb.txt)" \
-  mgba -f -C savegamePath=/root/saves /root/roms/game.gb
+XDG_RUNTIME_DIR=/run/user/0 systemctl --user stop PyboardUI.service   # clear the menu off the screen
+
+DISPLAY=:0 XAUTHORITY=/var/run/lightdm/root/:0 SDL_AUDIODRIVER=dummy \
+  /usr/games/mgba -f -C savegamePath=/root/saves -C savestatePath=/root/saves /root/roms/game.gb
 ```
+Run it from SSH with `DISPLAY` and `XAUTHORITY` set, as the launcher does. The controller mapping comes from `config.ini` (see below). An earlier version passed the whole controller database in `SDL_GAMECONTROLLERCONFIG`; that exceeds Linux's 128 KB limit for one environment variable ("Argument list too long"), and mGBA doesn't use it anyway.
+
+Debian installs mGBA (version 0.7.0 in buster) to `/usr/games/mgba`, which isn't on root's `PATH`, so always use the full path.
 Check that it runs at full speed, the screen fills properly and the controller responds with the right buttons. `SDL_AUDIODRIVER=dummy` turns sound off.
 
-- ⚠️ **Does mGBA use the SDL controller database?** buster's mGBA may read raw joystick buttons and ignore `SDL_GAMECONTROLLERCONFIG`. If buttons are wrong with the database loaded, fix the mapping in `/root/.config/mgba/config.ini` instead, and commit that mapping to `config/mgba-config.ini` (one section per controller model).
-- ⚠️ **Does buster's mGBA accept `-C savegamePath=...`?** Save in-game, then check that the `.sav` file appears in `/root/saves/` and not next to the ROM. If the option isn't supported, set `savegamePath` in `config/mgba-config.ini` instead.
+- ✅ **Controller database: not used.** mGBA 0.7.0's SDL build reads raw joystick button numbers (SDL's joystick API, not its game-controller API), so `SDL_GAMECONTROLLERCONFIG` and `gamecontrollerdb.txt` have no effect (checked in the 0.7.0 source, 2026-11-11). By default only the D-pad works (axes 0/1 and hat 0); A, B, Select and Start are unmapped. Map them in `[gba.input.SDLB]` of `/root/.config/mgba/config.ini` (the SDL build uses the `gba` section names even for Game Boy games), using `keyA=N` etc. with button numbers from `jstest`. A per-model section `[gba.input-profile.<joystick name>]` overrides it. Commit the mapping to `config/mgba-config.ini`. Board result (2026-11-11): A = button 1, B = 2, Start = 9, Select = 8, D-pad = axes 0/1 (the default); committed to `config/mgba-config.ini`.
+- **More than one controller model:** each model whose buttons differ gets its own section, `[gba.input-profile.<name>]`, named exactly as the board names it (`cat /sys/class/input/js*/device/name`). When a controller connects, mGBA loads `[gba.input.SDLB]` and then the matching section on top (checked in the 0.7.0 source). `hotkeys.py` does the same lookup each time a controller connects, so the save-state shortcuts follow the controller too. Sections so far: `[gba.input.SDLB]` (the USB controller, and the default for any other) and `Xbox Wireless Controller`.
+- **Save-state shortcuts:** L+R+Select saves the game state, L+R+Start loads it. mGBA 0.7.0's SDL build has no controller hotkeys; its save-state keys are keyboard only (Shift+F1 saves slot 1, F1 loads slot 1; checked in the source). `launcher/hotkeys.py` reads the controller from `/dev/input/js*` alongside mGBA and sends those keys with `xdotool` (added to the packages). It takes the L, R, Select and Start button numbers from `[gba.input.SDLB]` in mGBA's config. Saving always uses slot 1, so loading restores the most recent state. `-C savestatePath=` puts the state files (`*.ss1`) in `/root/saves/`, so `--pull-saves` backs them up. ✅ Confirmed on the board (2026-11-11): L = button 4, R = button 5, mGBA receives `xdotool`'s keys, and saving and loading both work.
+- ✅ **`savegamePath` is honored** (board, 2026-11-11): with `-C savegamePath=/root/saves`, the in-game save (`.sav`) is written to `/root/saves/`, not next to the ROM, and loads on the next start.
 - ⚠️ Bluetooth controllers often connect *after* the emulator has started. The boot flow waits for a controller before starting mGBA, but check that mGBA still picks up a controller that reconnects mid-game (see step 9).
 
 ### 4. ROM selection: `/etc/unihiker-gb/game.conf`
@@ -180,55 +250,26 @@ ROM_FILE="game.gb"
 The ROM is chosen by filename only, never by path (item 10). `set-rom.sh` writes this line with `printf %q`, so any filename it accepts can be read back safely.
 
 ### 5. Launch script: `/opt/unihiker-gb/start-gb.sh`
-```bash
-#!/bin/bash
-set -euo pipefail
-export DISPLAY=:0
-export HOME=/root
-APP=/opt/unihiker-gb
-ROMS_DIR=/root/roms
-SAVES_DIR=/root/saves
+Written: [`launcher/start-gb.sh`](../launcher/start-gb.sh). In order, it:
+1. Checks `game.conf`, the ROM and mGBA. A problem here exits with **status 2**, before the menu is touched, so the board stays usable; `gameboy.service` doesn't restart on status 2 (`RestartPreventExitStatus=2`).
+2. Waits for X (`xset q`), then turns off screen blanking (`xset s off`, plus `xset -dpms` only if X has the DPMS extension; the UNIHIKER starts X with `-dpms`, so it usually doesn't; item 11).
+3. Starts `status-screen.py` in the background (splash, then the controller prompt).
+4. Waits up to 20 s for root's user manager, then stops the built-in menu (`systemctl --user stop PyboardUI.service`, step 8).
+5. Runs `check-skip-button.py`. If button B is held: closes the splash, starts the menu again and exits 0, so the service doesn't restart.
+6. Waits for `/dev/input/js*`.
+7. Starts `hotkeys.py` in the background (save-state shortcuts).
+8. Logs `starting mGBA: <ROM>` (used to time the boot, item 17), closes the splash and `exec`s `/usr/games/mgba -f -C savegamePath=/root/saves -C savestatePath=/root/saves <ROM>` with `SDL_AUDIODRIVER=dummy`.
 
-CONF=/etc/unihiker-gb/game.conf
-[ -f "$CONF" ] || { echo "missing $CONF" >&2; exit 1; }
-. "$CONF"
-[ -f /etc/unihiker-gb/board.conf ] && . /etc/unihiker-gb/board.conf
-case "${ROM_FILE:-}" in ""|*/*) echo "ROM_FILE must be a filename in $ROMS_DIR: '${ROM_FILE:-}'" >&2; exit 1;; esac
-ROM_PATH="$ROMS_DIR/$ROM_FILE"
-[ -f "$ROM_PATH" ] || { echo "ROM not found: $ROM_PATH" >&2; exit 1; }
+It exports `DISPLAY=:0`, `HOME=/root`, `XAUTHORITY=/var/run/lightdm/root/:0` and `XDG_RUNTIME_DIR=/run/user/0`. All output goes to the journal (`./fetch-logs.sh`). Tested in the Docker install test with stand-ins for X, `systemctl`, mGBA and pinpong: missing ROM, normal boot and skip-button boot.
 
-# Wait for X to be up, then keep the screen on during play (item 11)
-until xset q >/dev/null 2>&1; do sleep 1; done
-xset s off -dpms
+**`status-screen.py`** (written; Tk, fullscreen and on top, Python 3.7): shows `splash.png`. If no `/dev/input/js*` device has appeared after 5 seconds, it shows the prompt from the [boot flow](#boot-flow) instead, and goes back to the splash if a controller appears. The launcher closes it with SIGTERM. Checked on a virtual 240×320 display in buster: splash, prompt (the text fits), back to the splash, clean exit, and a black screen if `splash.png` is missing.
 
-# Splash, then the "connect a controller" prompt if none appears (items 12, 17)
-python3 "$APP/status-screen.py" &
-SCREEN=$!
-
-# Board button held at boot: skip the emulator for this boot (item 16)
-if python3 "$APP/check-skip-button.py"; then
-  echo "skip button held: starting the built-in menu for this boot"
-  kill "$SCREEN" 2>/dev/null || true
-  [ -n "${LAUNCHER_UNIT:-}" ] && systemctl start "$LAUNCHER_UNIT"
-  exit 0
-fi
-
-# Wait for a controller
-until compgen -G '/dev/input/js*' >/dev/null; do sleep 1; done
-kill "$SCREEN" 2>/dev/null || true
-
-export SDL_AUDIODRIVER=dummy     # sound off (item 15)
-export SDL_GAMECONTROLLERCONFIG="$(grep -i 'platform:Linux' "$APP/gamecontrollerdb.txt")"   # item 14
-echo "starting mGBA: $ROM_FILE"  # this timestamp in the journal is used to measure boot time (item 17)
-exec mgba -f -C savegamePath="$SAVES_DIR" "$ROM_PATH"
-```
-`chmod +x /opt/unihiker-gb/start-gb.sh`
-
-**`status-screen.py`** (Tk, fullscreen, Python 3.7): shows `splash.png`. If no `/dev/input/js*` device has appeared after about 5 seconds, it shows the prompt from the [boot flow](#boot-flow) instead. The launcher closes it.
-
-**`check-skip-button.py`** (uses DFRobot's `pinpong` library): reads button B (and A, if that's easy) once and exits 0 if it's held, 1 otherwise.
-- ⚠️ Check that `pinpong` is preinstalled on the board image, and which pins the buttons use.
-- ⚠️ `pinpong` can take a few seconds to connect to the co-processor. Measure this, since it adds to boot time. "Hold until the menu appears" in the prompt covers the delay.
+**`check-skip-button.py`** (written; uses DFRobot's preinstalled `pinpong` library; Python 3.7): exits 0 if button B is held, 1 otherwise. Tested against a fake `pinpong`: held, not held, one glitchy reading, connection error, and a hung connection (gives up after 10 s).
+- Connects with `Board("UNIHIKER").begin()` (0.9 s, confirmed), then reads `Pin(Pin.P28, Pin.IN).read_digital()` directly. B reads **0 when pressed** (confirmed). The pins are used rather than the extension's `button_b`, which lags one reading behind.
+- Samples for about 0.5 s and only counts the button as held if every reading is 0, so a single glitchy reading can't skip the emulator.
+- Runs after the menu is stopped (step 8), so the two don't compete for the co-processor connection on `/dev/ttyS3`.
+- If `pinpong` fails or hangs (10 s timeout), it exits 1 (not held) and logs a warning, so a problem with the button never stops the game from starting. pinpong's start-up banner is kept out of the journal.
+- Total cost at boot: about 1.5 s (connect plus sampling). "Hold until the menu appears" in the prompt covers it.
 
 ### 6. Pause when the controller disconnects (item 13)
 
@@ -238,23 +279,26 @@ ACTION=="remove", SUBSYSTEM=="input", KERNEL=="js[0-9]*", RUN+="/opt/unihiker-gb
 ACTION=="add",    SUBSYSTEM=="input", KERNEL=="js[0-9]*", RUN+="/opt/unihiker-gb/controller-event.sh add"
 ```
 `controller-event.sh` logs each event with `logger -t unihiker-gb`, so `fetch-logs.sh` can show it, then:
-- `remove`: if no `/dev/input/js*` devices are left, freeze mGBA with `pkill -STOP -x mgba`.
-- `add`: resume it with `pkill -CONT -x mgba`.
+- `remove`: if no `/dev/input/js*` devices are left, freeze mGBA with `kill -STOP $(pidof mgba)`.
+- `add`: resume it with `kill -CONT`.
+
+Written: [`launcher/controller-event.sh`](../launcher/controller-event.sh). It uses `pidof` (always installed: `sysvinit-utils` is essential) rather than `pkill`. The Docker test checks that a process named `mgba` is frozen when the last controller goes, resumed when one comes back, and left running while a second controller is still connected.
 
 Freezing the process pauses the game whatever mGBA's own pause key is, and with sound off there's no audio glitch.
-- ⚠️ Test that mGBA (SDL) notices the reconnected controller after it resumes. If it doesn't, the fallback is to send mGBA's pause key with `xdotool` instead of freezing the process.
+- ✅ mGBA picks up the reconnected controller after it resumes (board, 2026-11-12). The `xdotool` pause-key fallback isn't needed.
 
 ### 7. systemd service: `/etc/systemd/system/gameboy.service`
 ```ini
 [Unit]
 Description=Game Boy emulator
-After=graphical.target bluetooth.target
+After=graphical.target lightdm.service bluetooth.target
 Wants=bluetooth.target
 
 [Service]
 ExecStart=/opt/unihiker-gb/start-gb.sh
 Restart=on-failure
 RestartSec=3
+RestartPreventExitStatus=2
 User=root
 
 [Install]
@@ -264,23 +308,42 @@ WantedBy=graphical.target
 systemctl daemon-reload
 systemctl enable --now gameboy.service
 ```
-When the skip button is held, `start-gb.sh` exits normally, so `Restart=on-failure` doesn't start the emulator again.
+When the skip button is held, `start-gb.sh` exits normally, so `Restart=on-failure` doesn't start the emulator again. A wrong setting (missing ROM, bad `game.conf`) exits 2, which `RestartPreventExitStatus=2` also keeps from restarting.
 
-### 8. ⚠️ Deal with the built-in launcher
-The UNIHIKER's on-screen menu also starts at boot and may draw over the emulator. Find its service with:
+### 8. The built-in menu
+The UNIHIKER's on-screen menu is `PyboardUI.service`, a systemd **user** service run by root's user manager. It isn't enabled; `/root/.xsessionrc` starts it each time lightdm logs root in (see [Board check results](#board-check-results-2026-11-11)).
+
+**Decision: stop it at each boot; don't disable, mask or edit anything.**
+- `systemctl --user disable` would do nothing, because the unit has no `[Install]` section.
+- Masking it would make `.xsessionrc`'s start command fail. Debian's `/etc/X11/Xsession` runs with `set -e` and reads `.xsessionrc`, so that failure could end the whole desktop session.
+- Editing `.xsessionrc` changes DFRobot's own setup and could be undone by their updates.
+
+So `start-gb.sh` runs `systemctl --user stop PyboardUI.service` after the splash appears, and `systemctl --user start PyboardUI.service` when the skip button is held. Both need `XDG_RUNTIME_DIR=/run/user/0`, because the launcher runs as a system service. Nothing is left changed on the board, so there's nothing to restore on uninstall, and the menu comes back by itself if `gameboy.service` is disabled.
+
+Confirmed on the board (2026-11-11): stopping the menu clears it from the screen, and starting it brings it back. The commands:
 ```bash
-systemctl list-units --type=service | grep -i -E 'menu|gui|unihiker|dfrobot'
+cat /root/.xsessionrc                                   # confirm how the menu is started
+XDG_RUNTIME_DIR=/run/user/0 systemctl --user stop PyboardUI.service    # menu disappears
+XDG_RUNTIME_DIR=/run/user/0 systemctl --user start PyboardUI.service   # menu comes back
 ```
-Disable it with `systemctl disable <name>`, and record the name as `LAUNCHER_UNIT="<name>"` in `/etc/unihiker-gb/board.conf` so the skip button can start it for one boot. Keep SSH access and the USB web UI so you can always recover.
+Keep SSH access and the USB web UI (`startServer.py`, not affected) so you can always recover.
 
 ### 9. Test the boot flow
+To get the menu back while testing, over SSH:
+```bash
+systemctl stop gameboy                                                  # this boot only
+XDG_RUNTIME_DIR=/run/user/0 systemctl --user start PyboardUI.service
+systemctl disable gameboy                                               # and from the next boot on
+```
+
 - Power on with no controller: the splash appears, then the prompt.
 - Turn on or plug in the controller: the game starts.
+- Normal power-on: the UNIHIKER menu shows for at most a moment, then the splash covers it and the menu stops (`XDG_RUNTIME_DIR=/run/user/0 systemctl --user is-active PyboardUI.service` reports `inactive`).
 - Power on holding button B: the UNIHIKER menu appears instead. The next normal boot starts the game again.
 - Mid-game, turn off or unplug the controller: the game freezes. Reconnect: it resumes and the controller works.
-- Leave the game running without input for longer than the screen-blanking timeout: the screen stays on.
+- Leave the game running without input for longer than the screen-blanking timeout: the screen stays on. (Skipped on 2026-11-12; not yet confirmed.)
 - Save in-game: the `.sav` file appears in `/root/saves/`.
-- **Measure boot time** from power-on to gameplay with a stopwatch, and compare it with `systemd-analyze` and the "starting mGBA" line in `./fetch-logs.sh`. Record the result in this plan.
+- **Measure boot time** from power-on to gameplay with a stopwatch, and compare it with `systemd-analyze` and the "starting mGBA" line in `./fetch-logs.sh`. Record the result in this plan. Result: 28 s (2026-11-12).
 
 ### 10. Change the ROM (now and later)
 ```bash
@@ -305,18 +368,12 @@ The goal: take a fresh UNIHIKER M10 to the configuration above with one command,
 Keeping all the board-side logic in `install.sh` means it can be tested directly over SSH. `deploy.sh` only checks, moves files and runs it. `deploy.sh` and `fetch-logs.sh` share their host and SSH settings through `scripts/lib/common.sh`.
 
 ### `fetch-packages.sh`
-Runs an arm64 Debian buster container and downloads the packages with their dependencies:
-```bash
-docker run --rm --platform linux/arm64 -v "$PWD/packages:/out" debian:buster bash -c '
-  echo "deb http://archive.debian.org/debian buster main" > /etc/apt/sources.list
-  apt-get -o Acquire::Check-Valid-Until=false update
-  apt-get install -y --download-only mgba-sdl bluez joystick python3-tk
-  cp /var/cache/apt/archives/*.deb /out/
-  apt-get install -y dpkg-dev && cd /out && dpkg-scanpackages . > Packages'
-```
-- The container starts from a minimal image, so it also downloads packages the board already has. That's harmless: apt skips them on the board.
+Runs an arm64 Debian buster container and downloads the packages with their **full** dependency tree (about 240 packages, 80 MB):
+- Uses archive.debian.org for buster, buster-updates and the buster security updates. The base image's core libraries are at security-update versions, so those sources are needed.
+- Downloads the whole dependency tree (`apt-cache depends --recurse`, then `apt-get download`), not just what the container lacks. A plain `--download-only` skips libraries the container already has, such as `libc6`, and the install would then fail on a board with older versions of them.
+- Writes a flat apt repository index (`Packages` and `Release`, with `apt-ftparchive`) and `packages/manifest.txt` (architecture, package list, date, git commit).
 - ⚠️ If the board reports `armhf` rather than `arm64`, use `--platform linux/arm/v7`.
-- It also writes the git commit and date into `packages/manifest.txt`, so it's clear which package set is deployed.
+- Apt skips packages the board already has at the same or a newer version, and `install.sh` installs with `--no-install-recommends` to match what was downloaded.
 
 ### SSH access (items 3 and 4)
 `scripts/lib/common.sh` gives every Mac script the same SSH settings:
@@ -330,6 +387,7 @@ SSH_OPTS=(-i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o
 - **Re-flashed or different board:** its key changes, and SSH refuses to connect, as it should. `deploy.sh` recognizes this error and tells you to re-run with `--forget-host` if you've just re-flashed or swapped the board. `--forget-host` runs `ssh-keygen -R <host> -f "$KNOWN_HOSTS"`.
 - **First login:** if the key is missing, `deploy.sh` creates it (`ssh-keygen -t ed25519 -N "" -f "$KEY"`). If the board doesn't accept the key yet (`ssh -o BatchMode=yes ... true` fails), it runs `ssh-copy-id` with that key. You type the default password (`dfrobot`) once; after that, no more password prompts.
 - **Root password:** `--set-password` runs `ssh -t root@<host> passwd` so you can change it from the default.
+- **Port:** the board uses port 22. The `UNIHIKER_SSH_PORT` environment variable overrides it, which is only needed for testing `deploy.sh` against a container.
 
 ### ROM filename check (item 10)
 `scripts/check-roms.sh <file or folder>...` checks every ROM about to be deployed:
@@ -347,7 +405,6 @@ For each problem it prints the file and a suggested rename. `set-rom.sh` on the 
   --roms-dir <dir>      Copy a whole folder of ROMs, e.g. ./roms (the boot game stays as it is unless --rom is given)
   --pair                After installing, pair a Bluetooth controller interactively (runs pair-bluetooth.sh)
   --bt-ertm-fix         Install the Bluetooth ERTM workaround (only for controllers that need it)
-  --disable-launcher <unit>  Disable the built-in UNIHIKER menu service (name found in step 8)
   --no-start            Install everything but don't start/restart the emulator service
   --set-password        Change the board's root password (interactive)
   --forget-host         Forget the board's SSH key first (after a re-flash or when switching boards)
@@ -356,7 +413,7 @@ For each problem it prints the file and a suggested rename. `set-rom.sh` on the 
 Typical first run:
 ```bash
 scripts/fetch-packages.sh                      # once, or when the package list changes
-./deploy.sh --rom roms/game.gb --disable-launcher <unit> --set-password --pair   # leave out --pair for a USB controller
+./deploy.sh --rom roms/game.gb --set-password --pair   # leave out --pair for a USB controller
 ```
 Changing the game later:
 ```bash
@@ -364,17 +421,17 @@ Changing the game later:
 ```
 Backing up saves, and reading logs:
 ```bash
-./deploy.sh --pull-saves                       # saves/2026-11-11-1530/...
+./deploy.sh --pull-saves                       # saves/2026-11-11-153000/...
 ./fetch-logs.sh                                # last 200 lines; --follow to watch live, --lines <n>, --boot for this boot only
 ```
 
 ### What `deploy.sh` does
-1. **Local checks:** `packages/` contains a package index (`Packages`); if not, it tells you to run `scripts/fetch-packages.sh` and stops. Runs `scripts/check-roms.sh` on the `--rom` and `--roms-dir` files and stops if any filename would cause problems.
+1. **ROM check:** runs `scripts/check-roms.sh` on the `--rom` and `--roms-dir` files and stops if any filename would cause problems.
 2. **SSH access:** with `--forget-host`, forgets the old key first. Creates the SSH key if needed, checks that the board is reachable, and installs the key with `ssh-copy-id` if the board doesn't accept it yet (see [SSH access](#ssh-access-items-3-and-4)). If the board can't be reached, it prints how to connect (USB cable, address) and stops.
 3. **Root password:** with `--set-password`, runs `passwd` on the board interactively.
 4. **Clock (item 2):** sets the board's clock from the Mac: `ssh root@<host> "date -u -s @$(date -u +%s)"`.
-5. **Saves (item 8):** with `--pull-saves`, copies `/root/saves/` from the board into a new `saves/<YYYY-MM-DD-HHMM>/` folder, using `tar` over SSH, then stops. Each backup goes to a new folder, so earlier backups are never overwritten.
-6. **Staging:** writes a `VERSION` file (output of `git describe --always --dirty` and the date in UTC), then streams the repo files to a staging folder on the board, using `tar` over SSH so the board doesn't need `rsync`:
+5. **Saves (item 8):** with `--pull-saves`, copies `/root/saves/` from the board into a new `saves/<YYYY-MM-DD-HHMMSS>/` folder, using `tar` over SSH, then stops. Each backup goes to a new folder, so earlier backups are never overwritten.
+6. **Staging:** checks that `packages/` contains a package index (`Packages`); if not, it tells you to run `scripts/fetch-packages.sh` and stops. (This check comes after the saves step, so `--pull-saves` works without packages.) Then writes a `VERSION` file (output of `git describe --always --dirty` and the date in UTC), then streams the repo files to a staging folder on the board, using `tar` over SSH so the board doesn't need `rsync`:
    `tar -czf - VERSION assets config launcher systemd scripts packages | ssh root@<host> 'rm -rf /tmp/unihiker-gb && mkdir -p /tmp/unihiker-gb && tar -xzf - -C /tmp/unihiker-gb'`
 7. **ROMs:** copies ROMs with `scp` into `/root/roms/`, if `--rom` or `--roms-dir` was given. It never deletes anything on the board.
 8. **Install:** runs `ssh root@<host> 'bash /tmp/unihiker-gb/scripts/install.sh <flags>'`, passing the matching flags through (including `--rom-file "<filename>"` when `--rom` was given).
@@ -385,31 +442,43 @@ Backing up saves, and reading logs:
 Each step checks first and only changes what's needed, so re-running it is safe.
 
 1. **Preflight:** must be root; check `/etc/os-release` says Debian 10, and warn (don't fail) if not; check that `dpkg --print-architecture` matches the packages, and fail if not; check there's enough free disk space. If systemd isn't running (the Docker test), say so: steps that need systemd or udev are then reported as "skipped" instead of failing.
-2. **Packages (offline):** copy `packages/` to `/opt/unihiker-gb/packages/`, add the local source `/etc/apt/sources.list.d/unihiker-gb.list`, and install `mgba-sdl bluez joystick python3-tk` with apt pointed at that source only (see step 1 of the manual steps). No internet needed. Skip packages that are already installed. The board's own `sources.list` isn't touched.
+2. **Packages (offline):** copy `packages/` to `/opt/unihiker-gb/packages/`, add the local source `/etc/apt/sources.list.d/unihiker-gb.list`, and install `mgba-sdl bluez joystick python3-tk xdotool` with apt pointed at that source only (see step 1 of the manual steps). No internet needed. Skip packages that are already installed. The board's own `sources.list` isn't touched.
 3. **Folders:** create `/etc/unihiker-gb`, `/opt/unihiker-gb`, `/root/roms`, `/root/saves`, `/root/.config/mgba`.
 4. **Move old saves:** move any `.sav` files from `/root/roms/` into `/root/saves/`, unless a file with the same name is already there (in that case, leave both and print a warning).
 5. **Program files** (always overwritten, since they come from the repo):
-   - into `/opt/unihiker-gb/`: `start-gb.sh`, `status-screen.py`, `check-skip-button.py`, `controller-event.sh`, `set-rom.sh`, `pair-bluetooth.sh` (scripts made executable), plus `splash.png` and `gamecontrollerdb.txt`
+   - into `/opt/unihiker-gb/`: `start-gb.sh`, `status-screen.py`, `check-skip-button.py`, `hotkeys.py`, `controller-event.sh`, `set-rom.sh`, `pair-bluetooth.sh` (scripts made executable), plus `splash.png`; an old `gamecontrollerdb.txt` from earlier versions is removed
    - `gameboy.service` into `/etc/systemd/system/`
    - the udev rule into `/etc/udev/rules.d/`, then `udevadm control --reload`
 6. **Settings files** (never silently overwritten, since the user may have edited them on the board):
    - `game.conf`: install the default only if none exists. If `--rom-file` was given, write `ROM_FILE` with the same rules and quoting as `set-rom.sh`.
-   - `mgba-config.ini`: install only if no mGBA config exists. If one exists and differs, save the repo version alongside it as `config.ini.repo` and print a notice.
-   - `board.conf`: set `LAUNCHER_UNIT` when `--disable-launcher` is given.
+   - `mgba-config.ini`: always installed, because the repo copy holds the controller mappings and mGBA 0.7.0's SDL build never writes the file. If the board's copy differs (edited by hand), it's kept as `config.ini.bak-<date-time>` first. (Changed 2026-11-12: it used to be installed only if missing, so new mappings didn't reach a board that already had a config.)
 7. **Version (item 19):** write `/etc/unihiker-gb/version` from the staged `VERSION` file plus the package manifest.
-8. **Bluetooth:** `systemctl enable bluetooth`. With `--bt-ertm-fix`, install `config/bluetooth.conf` to `/etc/modprobe.d/` and set the option for the current boot too.
-9. **Built-in launcher** (with `--disable-launcher <unit>`): `systemctl disable --now <unit>`. Never guess the unit name; it has to be passed in, so the script can't disable the wrong thing.
+8. **Bluetooth:** `systemctl enable bluetooth`. With `--bt-ertm-fix`, install `config/bluetooth.conf` as `/etc/modprobe.d/unihiker-gb-bluetooth.conf` and set the option for the current boot too.
+9. **Built-in menu:** nothing to do. The launcher stops the menu at each boot (step 8), so nothing on the board is disabled.
 10. **Service:** `systemctl daemon-reload`, `systemctl enable gameboy.service`, then `systemctl restart gameboy.service` unless `--no-start`.
 11. **Verify and summarize:** check that the ROM named in `game.conf` exists; that `systemctl is-active gameboy` reports active (after a few seconds' wait); that `python3 -c 'import pinpong'` works (warn only: without it the skip button doesn't work, but the game still runs); and whether a controller is visible (`/dev/input/js*`; warn only, since a Bluetooth controller may not be connected yet). Print the installed version and a short pass/warn/fail list, plus the last lines of `journalctl -u gameboy` if the service failed.
 
 ### `fetch-logs.sh` (item 22)
-Runs on the Mac, with the same `--host` option and SSH settings as `deploy.sh`. It shows the `gameboy` service log (`journalctl -u gameboy --no-pager`) followed by the controller events (`journalctl -t unihiker-gb --no-pager`).
+Runs on the Mac, with the same `--host` option and SSH settings as `deploy.sh`. It shows the controller events (`journalctl -t unihiker-gb --no-pager`) followed by the `gameboy` service log (`journalctl -u gameboy --no-pager`), so the service log can be followed live at the end.
 - `--lines <n>`: how many recent lines of each (default 200).
 - `--boot`: only this boot (`-b`).
 - `--follow`: keep watching the service log live (`-f`) until Ctrl+C.
 
 ### `pair-bluetooth.sh`
-Needs a person: put the controller in pairing mode, pick it from a list. `deploy.sh --pair` runs it at the end of a deploy, and it can also be run on its own later to pair a new controller. It runs a `bluetoothctl` scan for about 15 seconds, lists the devices it found, asks which one to use, then runs `pair`, `trust` and `connect` on it. Afterwards it restarts `gameboy.service` so mGBA sees the controller.
+Needs a person: put the controller in pairing mode, pick it from a list. `deploy.sh --pair` runs it at the end of a deploy, and it can also be run on its own later to pair a new controller:
+```bash
+./deploy.sh --pair                                                     # deploy, then pair
+ssh -t root@10.1.2.3 /opt/unihiker-gb/pair-bluetooth.sh                # pair only
+ssh -t root@10.1.2.3 /opt/unihiker-gb/pair-bluetooth.sh --mac XX:XX:XX:XX:XX:XX   # no scan
+```
+Written: [`scripts/pair-bluetooth.sh`](../scripts/pair-bluetooth.sh). It:
+1. Starts the `bluetooth` service if needed and powers the adapter on.
+2. Opens one `bluetoothctl` session in the background for the whole run, holding a `NoInputNoOutput` pairing agent (controllers can't confirm a code) and the scan. BlueZ 5.50 runs the other commands (`devices`, `info`, `trust`, `connect`) as one-off calls.
+3. Asks you to put the controller in pairing mode, scans for 15 s (`--scan-seconds`), and lists what it found: gamepads first (BlueZ icon `input-gaming`, tagged `[controller]`), unnamed devices last. Enter picks the first.
+4. Pairs (waits up to 30 s), trusts (so it reconnects by itself after a reboot), connects, and waits for `/dev/input/js*`. If it connects and then drops, it suggests `--bt-ertm-fix`.
+5. Restarts `gameboy.service` if it's enabled (`--no-restart` to skip).
+
+Tested by `tests/test-pair-bluetooth.sh` (also in CI) against a stand-in `bluetoothctl` (`tests/fakes/bluetoothctl`): scan and pick, `--mac` with an already-paired device, failed pairing, and bad input. ✅ Paired an Xbox Wireless Controller on the board through `./deploy.sh --pair` (2026-11-12).
 
 ### Script conventions
 - **Board scripts:** `#!/bin/bash` with `set -euo pipefail`, bash 5.0 (buster). Python scripts must run on Python 3.7.
@@ -422,7 +491,7 @@ Needs a person: put the controller in pairing mode, pick it from a list. `deploy
 - Check with `shellcheck` before committing (CI enforces it).
 
 ### Later: `uninstall.sh`
-Stop and disable `gameboy.service`, remove `/opt/unihiker-gb`, the unit file, the udev rule and the local apt source, and re-enable the built-in launcher. Leave ROMs, saves and `/etc/unihiker-gb` alone unless `--purge` is given.
+Stop and disable `gameboy.service`, remove `/opt/unihiker-gb`, the unit file, the udev rule and the local apt source. The built-in menu was never disabled, so it comes back on the next boot. Leave ROMs, saves and `/etc/unihiker-gb` alone unless `--purge` is given.
 
 ### Testing the scripts (item 21)
 **Without hardware:** `scripts/test-in-docker.sh` starts an arm64 Debian buster container (the same kind `fetch-packages.sh` uses), with the repo and `packages/` mounted, and runs `install.sh` twice. The first run must pass, apart from the systemd/udev steps reported as skipped and the `pinpong` and controller warnings. The second run must change nothing.
@@ -445,7 +514,7 @@ Stop and disable `gameboy.service`, remove `/opt/unihiker-gb`, the unit file, th
 
 `docs/recovery.md` documents how to get a board back, from least to most drastic:
 1. **Skip the emulator for one boot:** hold button B at power-on (item 16).
-2. **Turn the emulator off:** `ssh root@10.1.2.3 'systemctl disable --now gameboy'`, then `systemctl enable --now <built-in menu unit>`.
+2. **Turn the emulator off:** `ssh root@10.1.2.3 'systemctl disable --now gameboy'`. The built-in menu comes back on the next boot, or straight away with `XDG_RUNTIME_DIR=/run/user/0 systemctl --user start PyboardUI.service`.
 3. **Restore the factory image** (last resort):
    - First, back up saves with `./deploy.sh --pull-saves` if the board still boots. Re-flashing erases ROMs and saves.
    - ⚠️ Fill in from DFRobot's UNIHIKER documentation: where to download the official image, which flashing tool runs on macOS, how to put the board into flashing mode, and how long it takes.
@@ -476,7 +545,7 @@ The project's goal is to make deploying and configuring the UNIHIKER as simple a
 4. **First login.** `ssh-copy-id` asks for the default password.
    **Decision:** `deploy.sh` creates a dedicated SSH key and installs it on the board itself, and `--set-password` optionally changes the root password (see [SSH access](#ssh-access-items-3-and-4)).
 5. **The computer running deploy.**
-   **Decision:** macOS only. The board's USB network connection is plug-and-play on macOS, so no driver is needed. Mac scripts must run on macOS's bash 3.2.
+   **Decision:** macOS only. The board's USB network connection works on macOS without a driver (confirmed), but the first connection needs "Allow accessories to connect" set to "Always", because the "Allow" prompt disappears too quickly to click. Mac scripts must run on macOS's bash 3.2.
 6. **Re-flash path.**
    **Decision:** document how to restore the board's factory image, as the last-resort recovery, in `docs/recovery.md` (see [Recovery](#recovery-item-6)).
 
@@ -501,12 +570,14 @@ The project's goal is to make deploying and configuring the UNIHIKER as simple a
     **Decision:** mGBA pauses when the controller disconnects and resumes when it reconnects. Built in as a udev rule plus `controller-event.sh` (step 6). Testing reconnect is in step 9.
 14. **Mapping differs by controller model.**
     **Decision:** use SDL's community controller database ([`gamecontrollerdb.txt`](https://github.com/gabomdq/SDL_GameControllerDB)), which maps most common gamepads automatically. A copy is kept in `config/` and loaded by the launcher. ⚠️ Check that buster's mGBA honors it (step 3); if not, fall back to per-controller sections in `mgba-config.ini`.
+    **Result (2026-11-11):** it doesn't. mGBA 0.7.0 ignores the database, so mappings live in `config/mgba-config.ini` (`[gba.input.SDLB]`, plus `[gba.input-profile.<name>]` per controller model). `gamecontrollerdb.txt` has been removed from the repo; install.sh deletes a copy left on the board by earlier versions.
 15. **Audio.** ⚠️ The M10 may have only a buzzer, not a speaker.
     **Decision:** sound off (which also saves CPU), using `SDL_AUDIODRIVER=dummy` in the launcher.
-16. **Getting back to the UNIHIKER menu.** After the built-in menu is disabled, there's no way back except SSH.
-    **Decision:** holding a board button at boot skips the emulator for one boot, and the no-controller prompt explains how. Built in as `check-skip-button.py` and `LAUNCHER_UNIT` in `board.conf`. This needs `pinpong` at boot (⚠️ check it's preinstalled and how long it takes to connect).
+16. **Getting back to the UNIHIKER menu.** The launcher stops the built-in menu at each boot, so without a skip option there's no way back except SSH.
+    **Decision:** holding a board button at boot skips the emulator for one boot, and the no-controller prompt explains how. Built in as `check-skip-button.py`, which starts `PyboardUI.service` again (step 8). Confirmed: `pinpong` is preinstalled, connects in 0.9 s, and button B is `P28` (0 when pressed).
 17. **Boot time and progress.**
     **Decision:** measure the time from power-on to playing (step 9), and show a splash screen while it starts so the screen isn't blank. A placeholder `assets/splash.png` is committed to the repo and installed on every deploy.
+    **Result (2026-11-12):** 28 s from power-on to playing. About 2 s of that is the launcher; the rest is the board starting up. Accepted for now; ideas for shortening it are under [Future improvements](#future-improvements).
 18. **CPU speed.**
     **Decision:** no change up front. It's documented under [Likely problems](#likely-problems), to be addressed if stuttering actually happens.
 
@@ -532,12 +603,14 @@ The project's goal is to make deploying and configuring the UNIHIKER as simple a
 | **SSH** | Dedicated key and known-hosts file, set up by `deploy.sh`; `--forget-host` after a re-flash (items 3, 4). |
 | **Clock** | Set from the Mac on every deploy (item 2). |
 | **Pairing** | `deploy.sh --pair` for now; auto-pair on the board later. |
-| **Controller mapping** | SDL's `gamecontrollerdb.txt`, with mGBA config overrides if needed (item 14). |
+| **Controller mapping** | Button numbers in `config/mgba-config.ini`; mGBA 0.7.0 ignores SDL's controller database (item 14). |
+| **Save states** | L+R+Select saves, L+R+Start loads (slot 1), through `launcher/hotkeys.py` and `xdotool`; state files go to `/root/saves/`. |
 | **Controller disconnect** | Pause mGBA, resume on reconnect (item 13). |
 | **Audio** | Off (item 15). |
 | **Screen blanking** | Off during play (item 11). |
 | **Boot screens** | Splash image, then a "connect a controller" prompt that explains the skip button (items 12, 17). |
 | **Escape hatch** | Hold a board button at boot to start the UNIHIKER menu for one boot (item 16). |
+| **Built-in menu** | `PyboardUI.service` (a user service) is stopped by the launcher at each boot; never disabled, masked or edited (step 8). |
 | **Saves** | Kept in `/root/saves/`; backed up with `deploy.sh --pull-saves`; no protection against power loss (items 7, 8, 9). |
 | **Version stamp** | `/etc/unihiker-gb/version` (item 19). |
 | **Testing** | Docker test plus shellcheck in GitHub Actions (item 21). |
@@ -554,13 +627,22 @@ The project's goal is to make deploying and configuring the UNIHIKER as simple a
 | **Exit / switch-game combo** | Map a controller button combo (e.g. Select+Start held) to quit mGBA. The service would then bring up the picker. |
 | **Onboard A/B buttons as game input** | `pinpong` is now used at boot for the skip check (item 16). Using the buttons during play, through a `uinput` bridge, stays low priority. |
 | **Real splash artwork** | Replace the placeholder `assets/splash.png`. |
+| **Faster boot** | Boot takes 28 s, of which the launcher is about 2 s. To shorten it, start with `systemd-analyze blame` and `systemd-analyze critical-chain gameboy.service` to find slow services, then disable ones the game doesn't need (for example the web interface, if it isn't used). Check each change still leaves SSH and recovery working. |
 | **`uninstall.sh`** | See [Later: `uninstall.sh`](#later-uninstallsh). |
 
 ## Likely problems
+- **Mac can't reach 10.1.2.3 (`ssh` times out):** check System Settings → Network for the board's USB interface. If there isn't one, macOS hasn't allowed the accessory: see Board check results. With a VPN on, traffic goes through the VPN until that interface exists.
 - **Packages don't match the board:** if `install.sh` fails its architecture check or apt reports missing dependencies, re-run `fetch-packages.sh` with the right `--platform`, and check whether the board has DFRobot-modified versions of the packages.
 - **"Host key changed" when deploying:** expected after a re-flash or when switching boards. Re-run with `--forget-host`.
 - **Bluetooth reconnects:** if the controller doesn't come back after a reboot, check that it's `trust`ed and that `bluetooth.service` is enabled.
-- **Controller not seen by mGBA:** confirm it works in `jstest` first. If it does, the problem is the mapping (`gamecontrollerdb.txt` or mGBA's config), not the device.
+- **Controller not seen by mGBA:** confirm it works in `jstest` first. If it does, the problem is the mapping in `/root/.config/mgba/config.ini` (`[gba.input.SDLB]`), not the device.
 - **Game doesn't resume after reconnect:** see the fallback in step 6.
-- **Performance (item 18):** if mGBA stutters, first set the CPU to its performance mode: `echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor` (⚠️ check that the board exposes this setting). If that fixes it, add it to the launcher. If not, try `gnuboy`, which is lighter. Sound is already off.
+- **Performance (item 18):** if mGBA stutters, first keep the CPU at full speed. The board has no `performance` governor (only `ondemand`, `userspace` and `interactive`), so use `userspace` fixed at the top frequency:
+  ```bash
+  cd /sys/devices/system/cpu/cpu0/cpufreq
+  echo userspace > scaling_governor && cat scaling_max_freq > scaling_setspeed
+  ```
+  (Alternative: keep `ondemand` and run `cat scaling_max_freq > scaling_min_freq`.) If that fixes it, add it to the launcher. If not, try `gnuboy`, which is lighter. Sound is already off.
+- **Emulator or splash can't open the display** ("cannot open display" or "No protocol specified" in `./fetch-logs.sh`): check that `XAUTHORITY` in the launcher points at a file that exists (`/var/run/lightdm/root/:0`, or `/root/.Xauthority`).
+- **Menu not stopped** ("couldn't stop PyboardUI.service"): root's user manager wasn't running yet. Check `ls /run/user/0/systemd/private` and raise the 20-second wait in the launcher.
 - **Screen orientation:** if the picture comes out rotated or stretched, check the X screen settings before blaming mGBA.
