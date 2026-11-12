@@ -61,7 +61,7 @@ docker run --rm --platform "$PLATFORM" -v "$REPO:/src:ro" "$IMAGE" bash -euo pip
   check "version stamp written" grep -q "commit=docker-test" /etc/unihiker-gb/version
   check "package arch in version stamp" grep -q "packages_arch=" /etc/unihiker-gb/version
   for f in start-gb.sh status-screen.py check-skip-button.py hotkeys.py controller-event.sh set-rom.sh \
-           pair-bluetooth.sh lib/rom-rules.sh splash.png; do
+           pair-bluetooth.sh set-rotation.sh lib/rom-rules.sh splash.png splash-landscape.png; do
     check "/opt/unihiker-gb/$f installed" test -f "/opt/unihiker-gb/$f"
   done
   check "no controller database installed" test ! -e /opt/unihiker-gb/gamecontrollerdb.txt
@@ -70,6 +70,11 @@ docker run --rm --platform "$PLATFORM" -v "$REPO:/src:ro" "$IMAGE" bash -euo pip
   check "hotkeys.py reads L/R/Select/Start from the mGBA config" \
     grep -q "default mapping: L=4 R=5 Select=8 Start=9" /tmp/hotkeys.log
   check "start-gb.sh is executable" test -x /opt/unihiker-gb/start-gb.sh
+  check "set-rotation.sh is executable" test -x /opt/unihiker-gb/set-rotation.sh
+  check "first install sets the default screen orientation" grep -qx "DISPLAY_ROTATION=right" /etc/unihiker-gb/board.conf
+  check "first install writes the X rotation file (right = CW)" grep -q "Option *\"Rotate\" *\"CW\"" /etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf
+  check "display orientation unit installed" grep -q "ExecStart=/opt/unihiker-gb/set-rotation.sh --from-config" \
+    /etc/systemd/system/unihiker-gb-display.service
   check "systemd unit installed" test -f /etc/systemd/system/gameboy.service
   check "Bluetooth link security unit installed" test -f /etc/systemd/system/unihiker-gb-bluetooth.service
   check "bt-link-security.sh is executable" test -x /opt/unihiker-gb/bt-link-security.sh
@@ -87,6 +92,49 @@ docker run --rm --platform "$PLATFORM" -v "$REPO:/src:ro" "$IMAGE" bash -euo pip
   check "mGBA config matches the repo again" cmp -s /src/config/mgba-config.ini /root/.config/mgba/config.ini
   check "hand-edited copy kept as a backup" bash -c "grep -l \"edited by hand\" /root/.config/mgba/config.ini.bak-* >/dev/null"
   check "Xbox controller section installed" grep -q "^\[gba.input-profile.Xbox Wireless Controller\]" /root/.config/mgba/config.ini
+
+  echo "==> install.sh --rotate"
+  bash /tmp/unihiker-gb/scripts/install.sh --src /tmp/unihiker-gb --no-start --rotate left > /tmp/rot1.log 2>&1
+  check "--rotate left is written to board.conf" grep -qx "DISPLAY_ROTATION=left" /etc/unihiker-gb/board.conf
+  check "--rotate keeps the old board.conf as a backup" grep -qx "DISPLAY_ROTATION=right" /etc/unihiker-gb/board.conf.bak
+  check "--rotate left rewrites the X rotation file (CCW)" grep -q "Option *\"Rotate\" *\"CCW\"" /etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf
+  check "--rotate with --no-start says it applies next boot" grep -q "applies from the next boot" /tmp/rot1.log
+  bash /tmp/unihiker-gb/scripts/install.sh --src /tmp/unihiker-gb --no-start > /tmp/rot2.log 2>&1
+  check "a deploy without --rotate keeps the setting" grep -qx "DISPLAY_ROTATION=left" /etc/unihiker-gb/board.conf
+  check "a deploy without --rotate changes nothing" grep -q "changes made: 0" /tmp/rot2.log
+  rc=0; bash /tmp/unihiker-gb/scripts/install.sh --src /tmp/unihiker-gb --no-start --rotate sideways > /tmp/rot3.log 2>&1 || rc=$?
+  check "--rotate sideways is refused" test "$rc" -eq 2
+  check "a refused --rotate leaves board.conf alone" grep -qx "DISPLAY_ROTATION=left" /etc/unihiker-gb/board.conf
+
+  bash /tmp/unihiker-gb/scripts/install.sh --src /tmp/unihiker-gb --no-start --rotate normal > /tmp/rot4.log 2>&1
+  check "--rotate normal removes the X rotation file" test ! -e /etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf
+  bash /tmp/unihiker-gb/scripts/install.sh --src /tmp/unihiker-gb --no-start --rotate right > /tmp/rot5.log 2>&1
+  check "--rotate right writes it again (CW)" grep -q "Option *\"Rotate\" *\"CW\"" /etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf
+
+  echo "==> set-rotation.sh"
+  rotate() {  # rotate <out> <args>...: runs set-rotation.sh (stdout to <out>), returns its exit status
+    local out=$1; shift
+    /opt/unihiker-gb/set-rotation.sh "$@" > "$out" 2>/tmp/rot-err.log
+  }
+  rc=0; rotate /tmp/rot-same.out right || rc=$?
+  check "set-rotation.sh: same direction exits 0" test "$rc" -eq 0
+  check "set-rotation.sh: same direction changes nothing" test ! -s /tmp/rot-same.out
+  rotate /tmp/rot-inv.out inverted
+  check "set-rotation.sh inverted: says changed" grep -qx changed /tmp/rot-inv.out
+  check "set-rotation.sh inverted: Rotate UD" grep -q "Option *\"Rotate\" *\"UD\"" /etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf
+  rc=0; rotate /tmp/rot-bad.out sideways || rc=$?
+  check "set-rotation.sh: refuses an unknown direction (exit 2)" test "$rc" -eq 2
+  check "set-rotation.sh: a refused direction leaves the file alone" grep -q "\"UD\"" /etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf
+  rotate /tmp/rot-cfg.out --from-config
+  check "set-rotation.sh --from-config: back to board.conf (right)" grep -q "Option *\"Rotate\" *\"CW\"" /etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf
+  cp /etc/unihiker-gb/board.conf /tmp/board.conf.saved
+  echo "DISPLAY_ROTATION=sideways" > /etc/unihiker-gb/board.conf
+  rc=0; rotate /tmp/rot-badcfg.out --from-config || rc=$?
+  check "set-rotation.sh --from-config: bad setting exits 0" test "$rc" -eq 0
+  check "set-rotation.sh --from-config: bad setting means portrait" test ! -e /etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf
+  check "set-rotation.sh --from-config: ... with a warning" grep -q "warning: DISPLAY_ROTATION" /tmp/rot-err.log
+  cp /tmp/board.conf.saved /etc/unihiker-gb/board.conf
+  rotate /tmp/rot-cfg2.out --from-config
 
   echo "==> set-rom.sh"
   echo "another rom" > /root/roms/second.gbc
@@ -137,10 +185,13 @@ docker run --rm --platform "$PLATFORM" -v "$REPO:/src:ro" "$IMAGE" bash -euo pip
   check "missing ROM: menu left running" bash -c "! grep -q PyboardUI $calls"
 
   /opt/unihiker-gb/set-rom.sh second.gbc >/dev/null
+
   touch /dev/input/js0
   rc=0; boot /tmp/boot-normal.log || rc=$?
   check "normal boot: exits 0" test "$rc" -eq 0
   check "normal boot: screen blanking off" grep -q "xset s off" "$calls"
+  check "normal boot: rotation left in place" test -f /etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf
+  check "normal boot: desktop not restarted" bash -c "! grep -q lightdm $calls"
   check "normal boot: menu stopped" grep -q "systemctl --user stop PyboardUI.service" "$calls"
   check "normal boot: menu not restarted" bash -c "! grep -q \"systemctl --user start\" $calls"
   check "normal boot: skip check ran" grep -q "button B not held" /tmp/boot-normal.log
@@ -149,9 +200,20 @@ docker run --rm --platform "$PLATFORM" -v "$REPO:/src:ro" "$IMAGE" bash -euo pip
   check "normal boot: start logged for boot timing" grep -q "starting mGBA: second.gbc" /tmp/boot-normal.log
 
   rc=0; FAKE_B=held boot /tmp/boot-skip.log || rc=$?
-  check "skip button: exits 0 (no restart)" test "$rc" -eq 0
-  check "skip button: menu started again" grep -q "systemctl --user start PyboardUI.service" "$calls"
-  check "skip button: mGBA not started" bash -c "! grep -q ^mgba $calls"
+  check "skip button, rotated: exits 0 (no restart)" test "$rc" -eq 0
+  check "skip button, rotated: rotation removed for this boot" test ! -e /etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf
+  check "skip button, rotated: desktop restarted in portrait" grep -qx "systemctl restart --no-block lightdm.service" "$calls"
+  check "skip button, rotated: menu left to the new desktop login" bash -c "! grep -q \"systemctl --user start\" $calls"
+  check "skip button, rotated: mGBA not started" bash -c "! grep -q ^mgba $calls"
+  check "the next boot rotates again (unihiker-gb-display.service)" bash -c \
+    "[ \"\$(/opt/unihiker-gb/set-rotation.sh --from-config 2>/dev/null)\" = changed ] && grep -q CW /etc/X11/xorg.conf.d/10-unihiker-gb-rotate.conf"
+
+  /opt/unihiker-gb/set-rotation.sh normal >/dev/null 2>&1
+  rc=0; FAKE_B=held boot /tmp/boot-skip2.log || rc=$?
+  check "skip button, portrait: exits 0 (no restart)" test "$rc" -eq 0
+  check "skip button, portrait: menu started again" grep -q "systemctl --user start PyboardUI.service" "$calls"
+  check "skip button, portrait: desktop not restarted" bash -c "! grep -q lightdm $calls"
+  check "skip button, portrait: mGBA not started" bash -c "! grep -q ^mgba $calls"
 
   rm -f /dev/input/js0
   mv /usr/games/mgba.real /usr/games/mgba

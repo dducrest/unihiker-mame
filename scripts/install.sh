@@ -2,10 +2,15 @@
 # Sets up the Game Boy emulator on a UNIHIKER M10. Runs on the board, as root.
 # deploy.sh copies the repo to /tmp/unihiker-gb on the board and runs this script.
 #
-#   install.sh [--src <dir>] [--rom-file <name>] [--bt-ertm-fix] [--no-start]
+#   install.sh [--src <dir>] [--rom-file <name>] [--rotate <direction>] [--bt-ertm-fix]
+#              [--no-start]
 #
 #   --src <dir>                Repo files to install from (default: the repo this script is in)
 #   --rom-file <name>          Set the boot ROM: a filename that is already in /root/roms/
+#   --rotate <direction>       Screen orientation: left, right, inverted or normal
+#                              (portrait). Without it, the board keeps its setting
+#                              (DEFAULT_ROTATION on the first install). A change restarts
+#                              the desktop (with --no-start: from the next boot)
 #   --bt-ertm-fix              Install the Bluetooth ERTM workaround
 #   --no-start                 Don't start/restart the emulator service
 #
@@ -18,6 +23,7 @@ set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 ROM_FILE_ARG=""
+ROTATE_ARG=""
 ERTM_FIX=no
 NO_START=no
 
@@ -32,14 +38,18 @@ MGBA_CONF=/root/.config/mgba/config.ini
 APT_LIST=/etc/apt/sources.list.d/unihiker-gb.list
 UNIT_FILE=/etc/systemd/system/gameboy.service
 BT_UNIT_FILE=/etc/systemd/system/unihiker-gb-bluetooth.service
+DISPLAY_UNIT_FILE=/etc/systemd/system/unihiker-gb-display.service
 UDEV_RULE=/etc/udev/rules.d/99-unihiker-gb-controller.rules
 MODPROBE_CONF=/etc/modprobe.d/unihiker-gb-bluetooth.conf
 MIN_FREE_MB=300
 # Debian installs mgba to /usr/games, which isn't on root's PATH.
 MGBA=/usr/games/mgba
+BOARD_CONF=$ETC/board.conf
+# Screen orientation on a board that has no DISPLAY_ROTATION yet (plans/landscape-display.md).
+DEFAULT_ROTATION=right
 
 usage() {
-  sed -n '2,16s/^# \{0,1\}//p' "$0"
+  sed -n '2,21s/^# \{0,1\}//p' "$0"
   exit "${1:-0}"
 }
 
@@ -47,6 +57,14 @@ while [ $# -gt 0 ]; do
   case $1 in
     --src) [ $# -ge 2 ] || usage 2; SRC=$2; shift ;;
     --rom-file) [ $# -ge 2 ] || usage 2; ROM_FILE_ARG=$2; shift ;;
+    --rotate)
+      [ $# -ge 2 ] || usage 2
+      case $2 in
+        left | right | inverted | normal) ROTATE_ARG=$2 ;;
+        *) printf 'error: --rotate must be left, right, inverted or normal, not %s\n' "$2" >&2; exit 2 ;;
+      esac
+      shift
+      ;;
     --bt-ertm-fix) ERTM_FIX=yes ;;
     --no-start) NO_START=yes ;;
     -h | --help) usage 0 ;;
@@ -184,11 +202,13 @@ install_file "$SRC/launcher/status-screen.py" "$APP/status-screen.py" 0755 || tr
 install_file "$SRC/launcher/check-skip-button.py" "$APP/check-skip-button.py" 0755 || true
 install_file "$SRC/launcher/hotkeys.py" "$APP/hotkeys.py" 0755 || true
 install_file "$SRC/launcher/controller-event.sh" "$APP/controller-event.sh" 0755 || true
+install_file "$SRC/launcher/set-rotation.sh" "$APP/set-rotation.sh" 0755 || true
 install_file "$SRC/scripts/set-rom.sh" "$APP/set-rom.sh" 0755 || true
 install_file "$SRC/scripts/pair-bluetooth.sh" "$APP/pair-bluetooth.sh" 0755 || true
 install_file "$SRC/launcher/bt-link-security.sh" "$APP/bt-link-security.sh" 0755 || true
 install_file "$SRC/scripts/lib/rom-rules.sh" "$APP/lib/rom-rules.sh" 0644 || true
 install_file "$SRC/assets/splash.png" "$APP/splash.png" 0644 || true
+install_file "$SRC/assets/splash-landscape.png" "$APP/splash-landscape.png" 0644 || true
 # Earlier versions installed SDL's controller database, which mGBA 0.7.0 doesn't use.
 if [ -e "$APP/gamecontrollerdb.txt" ]; then
   rm -f "$APP/gamecontrollerdb.txt"
@@ -198,6 +218,7 @@ fi
 UNIT_CHANGED=no
 install_file "$SRC/systemd/gameboy.service" "$UNIT_FILE" 0644 && UNIT_CHANGED=yes
 install_file "$SRC/systemd/unihiker-gb-bluetooth.service" "$BT_UNIT_FILE" 0644 && UNIT_CHANGED=yes
+install_file "$SRC/systemd/unihiker-gb-display.service" "$DISPLAY_UNIT_FILE" 0644 && UNIT_CHANGED=yes
 
 if install_file "$SRC/config/99-unihiker-gb-controller.rules" "$UDEV_RULE" 0644; then
   if [ "$HAVE_SYSTEMD" = yes ] && command -v udevadm >/dev/null; then
@@ -223,6 +244,24 @@ if [ -n "$ROM_FILE_ARG" ]; then
     set_conf_var "$ETC/game.conf" ROM_FILE "$ROM_FILE_ARG"
     changed "boot ROM set to $ROM_FILE_ARG"
   fi
+fi
+
+# Screen orientation, in board.conf (read by start-gb.sh). --rotate sets it; otherwise an
+# existing value is kept, and a board without one gets DEFAULT_ROTATION.
+rotation_now=$(conf_value "$BOARD_CONF" DISPLAY_ROTATION)
+rotation=${ROTATE_ARG:-${rotation_now:-$DEFAULT_ROTATION}}
+if [ "$rotation" != "$rotation_now" ]; then
+  [ -f "$BOARD_CONF" ] && cp -p "$BOARD_CONF" "$BOARD_CONF.bak"
+  set_conf_var "$BOARD_CONF" DISPLAY_ROTATION "$rotation"
+  chmod 0644 "$BOARD_CONF"
+  changed "screen orientation set to $rotation ($BOARD_CONF)"
+fi
+# The board's display driver only rotates when X starts, so the orientation is an X config
+# file (plans/landscape-display.md, option B). The desktop is restarted in step 9 if it changed.
+X_CHANGED=no
+if [ -n "$("$APP/set-rotation.sh" "$rotation" 2>/dev/null)" ]; then
+  X_CHANGED=yes
+  changed "X display configuration for $rotation"
 fi
 
 # The repo's mGBA config (controller mappings) is the source of truth, so mapping changes
@@ -297,7 +336,22 @@ fi
 
 # 9. Service ------------------------------------------------------------------------------
 step "Emulator service"
+if [ "$X_CHANGED" = yes ]; then
+  if [ "$HAVE_SYSTEMD" = yes ] && [ "$NO_START" = no ] && systemctl -q is-active lightdm.service; then
+    # Stop the game first, so it doesn't crash and restart when X goes away.
+    systemctl stop gameboy.service
+    systemctl restart lightdm.service
+    note "restarted the desktop for the new screen orientation"
+  else
+    note "the new screen orientation applies from the next boot"
+  fi
+fi
 if [ "$HAVE_SYSTEMD" = yes ]; then
+  # Restores the screen orientation at each boot after a skip-button boot (set-rotation.sh).
+  if ! systemctl -q is-enabled unihiker-gb-display.service; then
+    systemctl enable unihiker-gb-display.service
+    changed "enabled unihiker-gb-display.service (screen orientation at boot)"
+  fi
   if ! systemctl -q is-enabled gameboy.service; then
     systemctl enable gameboy.service
     changed "enabled gameboy.service"
@@ -334,6 +388,33 @@ if [ "$HAVE_SYSTEMD" = yes ] && [ "$NO_START" = no ]; then
   else
     fail "gameboy.service is not running. Last log lines:"
     journalctl -u gameboy.service -n 15 --no-pager | sed 's/^/      /'
+  fi
+fi
+
+# Screen orientation: check X came up the expected shape. Needs X, so not in Docker, and
+# not with --no-start when the orientation changed (X hasn't restarted yet).
+case $rotation in
+  left | right) want_size="320 x 240" ;;
+  *) want_size="240 x 320" ;;
+esac
+if ! command -v xrandr >/dev/null; then
+  skip "screen orientation check (xrandr isn't installed)"
+elif [ "$X_CHANGED" = yes ] && [ "$NO_START" = yes ]; then
+  skip "screen orientation check (applies from the next boot)"
+else
+  size=""
+  for _ in $(seq 15); do  # X may still be starting after the desktop restart
+    size=$(DISPLAY=:0 XAUTHORITY=/var/run/lightdm/root/:0 timeout 5 xrandr -q 2>/dev/null |
+      sed -n '1s/.*current \([0-9]* x [0-9]*\).*/\1/p') || true
+    [ -n "$size" ] && break
+    sleep 1
+  done
+  if [ -z "$size" ]; then
+    skip "screen orientation check (no display running)"
+  elif [ "$size" = "$want_size" ]; then
+    pass "screen orientation: $rotation ($size)"
+  else
+    warn "screen orientation is $rotation, but the screen is $size (expected $want_size); see plans/landscape-display.md"
   fi
 fi
 

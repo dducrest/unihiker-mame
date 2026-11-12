@@ -7,6 +7,10 @@
 #   3. splash screen (status-screen.py)     7. save-state shortcuts (hotkeys.py)
 #   4. stop the built-in menu               8. mGBA, fullscreen, sound off
 #
+# The screen is already landscape when X starts, if DISPLAY_ROTATION in board.conf asks for
+# it (set-rotation.sh writes the X config; plans/landscape-display.md). Only the skip
+# button changes it here: back to portrait for the menu, for this boot.
+#
 # Exit status 2 means a setting is wrong (missing ROM, bad game.conf). gameboy.service
 # doesn't restart on it, and the built-in menu is left running so the board stays usable.
 # Output goes to the journal: ./fetch-logs.sh on the Mac shows it.
@@ -68,7 +72,15 @@ systemctl --user stop "$MENU_UNIT" || echo "warning: couldn't stop $MENU_UNIT"
 if python3 "$APP/check-skip-button.py"; then
   echo "skip button held: starting the built-in menu for this boot"
   close_screen
-  systemctl --user start "$MENU_UNIT"
+  if [ -n "$("$APP/set-rotation.sh" normal)" ]; then
+    # The screen was rotated, and the menu is laid out for portrait (it's cut off sideways).
+    # The rotation only changes when X starts, so restart the desktop; its login starts the
+    # menu again (/root/.xsessionrc). unihiker-gb-display.service rotates it again next boot.
+    echo "restarting the desktop in portrait for the menu"
+    systemctl restart --no-block lightdm.service
+  else
+    systemctl --user start "$MENU_UNIT"
+  fi
   exit 0
 fi
 
