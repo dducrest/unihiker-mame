@@ -21,7 +21,7 @@ Parts of this plan have been checked on a real M10 (see "Board check results"). 
 | Config files, `gameboy.service`, udev rule, `assets/splash.png` | Built (splash is a placeholder). `config/mgba-config.ini` has the controller mapping confirmed on the board. |
 | `launcher/hotkeys.py` | Built and working on the board: L+R+Select saves the game state, L+R+Start loads it. Covered by the Docker test (installed, reads the mapping). |
 | `launcher/start-gb.sh`, `status-screen.py`, `check-skip-button.py`, `controller-event.sh`, `systemd/gameboy.service` | **Built and working on the board** (2026-11-12): normal boot, no controller, skip button, and pause/resume on controller disconnect. Also tested in Docker and on a virtual display. Boot time: 28 s. The idle-screen check was skipped. |
-| `scripts/pair-bluetooth.sh` | **Written, not yet run on the board.** Tested with a stand-in `bluetoothctl` by `tests/test-pair-bluetooth.sh` (in CI). |
+| `scripts/pair-bluetooth.sh` | **Built and working on the board** (2026-11-12): paired an Xbox Wireless Controller through `./deploy.sh --pair`. Also tested with a stand-in `bluetoothctl` by `tests/test-pair-bluetooth.sh` (in CI). |
 | `docs/recovery.md` | Not written yet. |
 
 ## Board check results (2026-11-11)
@@ -48,11 +48,13 @@ First checks on a real UNIHIKER M10:
 | Launcher: skip button | Works (2026-11-12): holding button B while powering on brings up the UNIHIKER menu instead of the game. |
 | Launcher: controller disconnect | Works (2026-11-12): the game freezes when the controller goes, and resumes with working buttons when it reconnects (SIGSTOP/SIGCONT). |
 | Boot time | **28 s** from power-on until the game is playable (stopwatch, 2026-11-12). The launcher's own part is short: about 2 s from X being ready to mGBA starting. The rest is the board's own start-up (kernel, systemd, X). |
+| Bluetooth controller | Xbox Wireless Controller, paired with `./deploy.sh --pair`. Its buttons are numbered differently from the USB controller (A = 1, B = 0, L = 4, R = 5, Select = 6, Start = 7; D-pad is a hat, which mGBA maps by default), so it has its own section, `[gba.input-profile.Xbox Wireless Controller]`, in `config/mgba-config.ini`. mGBA and `hotkeys.py` pick the section by the controller's name, so switching controllers needs no change. |
+| Bluetooth reconnect | **Failed at first, fixed with link-level security** (2026-11-12). After a reboot the paired Xbox controller connected and was dropped about 4 s later. `btmon` showed a race: the controller asks for its HID channel (L2CAP PSM 17) about 14 ms before the board has registered that the link is encrypted; the 4.4 kernel refuses it ("security block"), the controller doesn't retry, and the board disconnects ("Authentication Failure"). The ERTM workaround was active and made no difference: the failure happens before ERTM matters. `hciconfig hci0 auth encrypt` (encrypt each link while it's set up) made the controller connect immediately. Applied at every boot by `unihiker-gb-bluetooth.service` (`launcher/bt-link-security.sh`). |
 | Clock | Wrong at boot (showed 2023-05-29), so the board doesn't keep the time. `deploy.sh` sets it on every deploy (item 2). |
 
 ## Next steps
 
-1. **Test `pair-bluetooth.sh` on the board** with a Bluetooth controller: `./deploy.sh --pair`, or `ssh -t root@10.1.2.3 /opt/unihiker-gb/pair-bluetooth.sh` to pair without redeploying (the script must be deployed first). Then reboot and check the controller reconnects by itself.
+1. **Check both controllers on the board** with the updated `config/mgba-config.ini` and `hotkeys.py`: the Xbox controller uses its own section, the USB controller the default one, including the save-state shortcuts. Also check, after `./deploy.sh` (installs the link-security service): the Xbox controller reconnects by itself after a reboot, and pairing a controller still works (`ssh -t root@10.1.2.3 /opt/unihiker-gb/pair-bluetooth.sh`).
 2. **`docs/recovery.md`**.
 
 ## What you're working with
@@ -82,6 +84,8 @@ mGBA plays `.gb`, `.gbc` and `.gba`, so changing the ROM later won't mean changi
 /opt/unihiker-gb/status-screen.py       <- splash image, then the "connect a controller" prompt
 /opt/unihiker-gb/check-skip-button.py   <- exits 0 if a board button is held at boot
 /opt/unihiker-gb/hotkeys.py             <- controller shortcuts for save states (L+R+Select / L+R+Start)
+/opt/unihiker-gb/bt-link-security.sh    <- Bluetooth link-level security, so paired controllers can reconnect
+/etc/systemd/system/unihiker-gb-bluetooth.service <- runs bt-link-security.sh whenever Bluetooth starts
 /opt/unihiker-gb/controller-event.sh    <- pauses/resumes mGBA when the controller disconnects/reconnects
 /opt/unihiker-gb/set-rom.sh             <- changes the boot ROM
 /opt/unihiker-gb/pair-bluetooth.sh      <- pairs a Bluetooth controller
@@ -130,8 +134,10 @@ launcher/start-gb.sh
 launcher/status-screen.py
 launcher/check-skip-button.py
 launcher/hotkeys.py
+launcher/bt-link-security.sh
 launcher/controller-event.sh
 systemd/gameboy.service
+systemd/unihiker-gb-bluetooth.service   # runs bt-link-security.sh whenever bluetooth.service starts
 scripts/lib/common.sh              # Mac: shared settings for deploy.sh and fetch-logs.sh (host, SSH key, known-hosts file)
 scripts/lib/rom-rules.sh           # Mac and board: ROM filename rules shared by check-roms.sh, install.sh and set-rom.sh
 scripts/check-roms.sh              # Mac: flags ROM filenames that will cause problems (run by deploy.sh, or on its own)
@@ -214,7 +220,8 @@ bluetoothctl
   quit
 systemctl enable bluetooth
 ```
-- ⚠️ Some controllers (Xbox-style ones in particular) won't stay connected unless ERTM is turned off: `echo 1 > /sys/module/bluetooth/parameters/disable_ertm`. To keep that setting across reboots, add `options bluetooth disable_ertm=1` to `/etc/modprobe.d/bluetooth.conf`.
+- ⚠️ Some controllers (Xbox-style ones in particular) won't stay connected unless ERTM is turned off: `echo 1 > /sys/module/bluetooth/parameters/disable_ertm`. To keep that setting across reboots, add `options bluetooth disable_ertm=1` to `/etc/modprobe.d/bluetooth.conf`. On this board it wasn't the problem for the Xbox Wireless Controller (2026-11-12), so `--bt-ertm-fix` stays optional, for controllers that keep dropping during play.
+- ✅ **Reconnecting after a reboot needs link-level security** on this board (kernel 4.4, Realtek adapter): `hciconfig hci0 auth encrypt`. Without it the Xbox Wireless Controller pairs but can't reconnect (see Board check results). `install.sh` installs `launcher/bt-link-security.sh` and `unihiker-gb-bluetooth.service`, which applies the setting each time `bluetooth.service` starts (it's lost on reboot), and `pair-bluetooth.sh` applies it too. It's on by default: it only means each connection is authenticated and encrypted while it's set up, which paired controllers do anyway. ⚠️ Check that pairing a new controller still works with it on.
 - ✅ The onboard Bluetooth adapter shows up in `bluetoothctl list` (board, 2026-11-11).
 
 ### 3. Test manually and check the controller mapping
@@ -230,6 +237,7 @@ Debian installs mGBA (version 0.7.0 in buster) to `/usr/games/mgba`, which isn't
 Check that it runs at full speed, the screen fills properly and the controller responds with the right buttons. `SDL_AUDIODRIVER=dummy` turns sound off.
 
 - ✅ **Controller database: not used.** mGBA 0.7.0's SDL build reads raw joystick button numbers (SDL's joystick API, not its game-controller API), so `SDL_GAMECONTROLLERCONFIG` and `gamecontrollerdb.txt` have no effect (checked in the 0.7.0 source, 2026-11-11). By default only the D-pad works (axes 0/1 and hat 0); A, B, Select and Start are unmapped. Map them in `[gba.input.SDLB]` of `/root/.config/mgba/config.ini` (the SDL build uses the `gba` section names even for Game Boy games), using `keyA=N` etc. with button numbers from `jstest`. A per-model section `[gba.input-profile.<joystick name>]` overrides it. Commit the mapping to `config/mgba-config.ini`. Board result (2026-11-11): A = button 1, B = 2, Start = 9, Select = 8, D-pad = axes 0/1 (the default); committed to `config/mgba-config.ini`.
+- **More than one controller model:** each model whose buttons differ gets its own section, `[gba.input-profile.<name>]`, named exactly as the board names it (`cat /sys/class/input/js*/device/name`). When a controller connects, mGBA loads `[gba.input.SDLB]` and then the matching section on top (checked in the 0.7.0 source). `hotkeys.py` does the same lookup each time a controller connects, so the save-state shortcuts follow the controller too. Sections so far: `[gba.input.SDLB]` (the USB controller, and the default for any other) and `Xbox Wireless Controller`.
 - **Save-state shortcuts:** L+R+Select saves the game state, L+R+Start loads it. mGBA 0.7.0's SDL build has no controller hotkeys; its save-state keys are keyboard only (Shift+F1 saves slot 1, F1 loads slot 1; checked in the source). `launcher/hotkeys.py` reads the controller from `/dev/input/js*` alongside mGBA and sends those keys with `xdotool` (added to the packages). It takes the L, R, Select and Start button numbers from `[gba.input.SDLB]` in mGBA's config. Saving always uses slot 1, so loading restores the most recent state. `-C savestatePath=` puts the state files (`*.ss1`) in `/root/saves/`, so `--pull-saves` backs them up. ✅ Confirmed on the board (2026-11-11): L = button 4, R = button 5, mGBA receives `xdotool`'s keys, and saving and loading both work.
 - ✅ **`savegamePath` is honored** (board, 2026-11-11): with `-C savegamePath=/root/saves`, the in-game save (`.sav`) is written to `/root/saves/`, not next to the ROM, and loads on the next start.
 - ⚠️ Bluetooth controllers often connect *after* the emulator has started. The boot flow waits for a controller before starting mGBA, but check that mGBA still picks up a controller that reconnects mid-game (see step 9).
@@ -470,7 +478,7 @@ Written: [`scripts/pair-bluetooth.sh`](../scripts/pair-bluetooth.sh). It:
 4. Pairs (waits up to 30 s), trusts (so it reconnects by itself after a reboot), connects, and waits for `/dev/input/js*`. If it connects and then drops, it suggests `--bt-ertm-fix`.
 5. Restarts `gameboy.service` if it's enabled (`--no-restart` to skip).
 
-Tested by `tests/test-pair-bluetooth.sh` (also in CI) against a stand-in `bluetoothctl` (`tests/fakes/bluetoothctl`): scan and pick, `--mac` with an already-paired device, failed pairing, and bad input. ⚠️ Not yet run with a real Bluetooth controller.
+Tested by `tests/test-pair-bluetooth.sh` (also in CI) against a stand-in `bluetoothctl` (`tests/fakes/bluetoothctl`): scan and pick, `--mac` with an already-paired device, failed pairing, and bad input. ✅ Paired an Xbox Wireless Controller on the board through `./deploy.sh --pair` (2026-11-12).
 
 ### Script conventions
 - **Board scripts:** `#!/bin/bash` with `set -euo pipefail`, bash 5.0 (buster). Python scripts must run on Python 3.7.

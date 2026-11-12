@@ -1,0 +1,15 @@
+[Unit]
+Description=Bluetooth link security for game controllers (unihiker-gb)
+Documentation=file:///opt/unihiker-gb/bt-link-security.sh
+# Runs each time bluetooth.service starts or restarts (PartOf + WantedBy below), because
+# the adapter loses the setting when it's switched off.
+After=bluetooth.service
+PartOf=bluetooth.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/unihiker-gb/bt-link-security.sh
+
+[Install]
+WantedBy=bluetooth.service

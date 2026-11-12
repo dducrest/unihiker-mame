@@ -31,6 +31,7 @@ SAVES=/root/saves
 MGBA_CONF=/root/.config/mgba/config.ini
 APT_LIST=/etc/apt/sources.list.d/unihiker-gb.list
 UNIT_FILE=/etc/systemd/system/gameboy.service
+BT_UNIT_FILE=/etc/systemd/system/unihiker-gb-bluetooth.service
 UDEV_RULE=/etc/udev/rules.d/99-unihiker-gb-controller.rules
 MODPROBE_CONF=/etc/modprobe.d/unihiker-gb-bluetooth.conf
 MIN_FREE_MB=300
@@ -185,6 +186,7 @@ install_file "$SRC/launcher/hotkeys.py" "$APP/hotkeys.py" 0755 || true
 install_file "$SRC/launcher/controller-event.sh" "$APP/controller-event.sh" 0755 || true
 install_file "$SRC/scripts/set-rom.sh" "$APP/set-rom.sh" 0755 || true
 install_file "$SRC/scripts/pair-bluetooth.sh" "$APP/pair-bluetooth.sh" 0755 || true
+install_file "$SRC/launcher/bt-link-security.sh" "$APP/bt-link-security.sh" 0755 || true
 install_file "$SRC/scripts/lib/rom-rules.sh" "$APP/lib/rom-rules.sh" 0644 || true
 install_file "$SRC/assets/splash.png" "$APP/splash.png" 0644 || true
 # Earlier versions installed SDL's controller database, which mGBA 0.7.0 doesn't use.
@@ -195,6 +197,7 @@ fi
 
 UNIT_CHANGED=no
 install_file "$SRC/systemd/gameboy.service" "$UNIT_FILE" 0644 && UNIT_CHANGED=yes
+install_file "$SRC/systemd/unihiker-gb-bluetooth.service" "$BT_UNIT_FILE" 0644 && UNIT_CHANGED=yes
 
 if install_file "$SRC/config/99-unihiker-gb-controller.rules" "$UDEV_RULE" 0644; then
   if [ "$HAVE_SYSTEMD" = yes ] && command -v udevadm >/dev/null; then
@@ -259,6 +262,19 @@ if [ "$HAVE_SYSTEMD" = yes ]; then
 else
   skip "enable bluetooth.service (no systemd)"
 fi
+# Link-level security, so paired controllers can reconnect (see bt-link-security.sh).
+if [ "$HAVE_SYSTEMD" = yes ]; then
+  [ "$UNIT_CHANGED" = yes ] && systemctl daemon-reload
+  if ! systemctl -q is-enabled unihiker-gb-bluetooth.service; then
+    systemctl enable unihiker-gb-bluetooth.service
+    changed "enabled unihiker-gb-bluetooth.service (Bluetooth link security at boot)"
+  fi
+  if ! systemctl -q is-active unihiker-gb-bluetooth.service; then
+    systemctl start unihiker-gb-bluetooth.service || warn "couldn't set Bluetooth link security now; see journalctl -u unihiker-gb-bluetooth"
+  fi
+else
+  skip "enable unihiker-gb-bluetooth.service (no systemd)"
+fi
 if [ "$ERTM_FIX" = yes ]; then
   install_file "$SRC/config/bluetooth.conf" "$MODPROBE_CONF" 0644 || true
   param=/sys/module/bluetooth/parameters/disable_ertm
@@ -275,7 +291,6 @@ fi
 # 9. Service ------------------------------------------------------------------------------
 step "Emulator service"
 if [ "$HAVE_SYSTEMD" = yes ]; then
-  [ "$UNIT_CHANGED" = yes ] && systemctl daemon-reload
   if ! systemctl -q is-enabled gameboy.service; then
     systemctl enable gameboy.service
     changed "enabled gameboy.service"
